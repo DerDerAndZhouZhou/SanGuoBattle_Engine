@@ -1,0 +1,11 @@
+# Plugins/MiniGame — 小游戏平台桥接占位目录
+
+本目录预留给：
+- 微信小游戏平台特定的 jslib 桥接代码
+- 抖音 TTSDK 平台特定的 jslib 桥接代码
+- 平台 SDK 配置导出文件（WechatProjectSettings.json / MiniGameAppId.txt 等）
+
+当前为空，Phase 1 不使用。
+Phase 2 实施 IPlatformSDK 抽象层时填充。
+
+参见 Docs/build/01-transform-sdk-setup.md §3

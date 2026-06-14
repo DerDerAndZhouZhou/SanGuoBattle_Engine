@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HDBuildOptimizer 生成 - IL2CPP/AOT 类型保留清单 -->
+<linker>
+  <assembly fullname="UnityEngine.CoreModule" preserve="all"/>
+  <assembly fullname="UnityEngine.UIModule" preserve="all"/>
+  <assembly fullname="UnityEngine.IMGUIModule" preserve="all"/>
+  <assembly fullname="UnityEngine.AudioModule" preserve="all"/>
+  <assembly fullname="UnityEngine.Physics2DModule" preserve="all"/>
+  <assembly fullname="UnityEngine.AnimationModule" preserve="all"/>
+  <assembly fullname="UnityEngine.TextRenderingModule" preserve="all"/>
+  <assembly fullname="UnityEngine.SpriteShapeModule" preserve="all"/>
+  <assembly fullname="UnityEngine.TilemapModule" preserve="all"/>
+  <assembly fullname="UnityEngine.UnityWebRequestModule" preserve="all"/>
+  <assembly fullname="UnityEngine.AssetBundleModule" preserve="all"/>
+  <assembly fullname="UnityEngine.ImageConversionModule" preserve="all"/>
+  <assembly fullname="UnityEngine.JSONSerializeModule" preserve="all"/>
+  <assembly fullname="UnityEngine.ScreenCaptureModule" preserve="all"/>
+  <assembly fullname="Unity.TextMeshPro" preserve="all"/>
+  <assembly fullname="XLua" preserve="all"/>
+  <assembly fullname="WeChatWASM" preserve="all"/>
+  <assembly fullname="TTSDK" preserve="all"/>
+  <assembly fullname="Assembly-CSharp" preserve="all"/>
+</linker>

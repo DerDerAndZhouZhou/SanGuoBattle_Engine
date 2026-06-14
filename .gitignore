@@ -1,0 +1,59 @@
+# HeroDefenseEngine — Unity 工程 .gitignore
+# 只提交源码（Assets / ProjectSettings / Packages / LocalPackages / WebGLPlugins / TextToolDatas
+#   / game.json / project.config.json），排除 Unity 生成目录、构建产物、IDE/本地文件。
+
+# ===== Unity 生成目录（工程根，不提交）=====
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+
+# ===== 项目专属（生成 / 本地，不提交）=====
+# Screenshots = MCP/开发测试截图（非工程源，根级 + Assets 内嵌旧截图）; wxGame = 微信小游戏导出（构建产物）
+/Screenshots/
+/Assets/Screenshots/
+/Assets/Screenshots.meta
+/wxGame/
+
+# ===== 嵌套生成目录（任意层）=====
+[Oo]bj/
+ExportedObj/
+.gradle/
+.consulo/
+
+# ===== IDE / 工程文件（自动生成）=====
+.vs/
+.idea/
+.vscode/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== 构建 / 打包产物 =====
+sysinfo.txt
+*.stackdump
+*.apk
+*.aab
+*.unitypackage
+*.app
+crashlytics-build.properties

@@ -1,0 +1,16 @@
+﻿
+
+<linker>
+
+	<assembly fullname="Assembly-CSharp">
+	    <type fullname="HeroDefense.SDK.AdBridge" preserve="all"/>
+		<type fullname="HeroDefense.Lua.LuaBridge" preserve="all"/>
+		<type fullname="HeroDefense.Lua.LuaEventBridge" preserve="all"/>
+		<type fullname="HeroDefense.Lua.LuaUIBridge" preserve="all"/>
+		<type fullname="HeroDefense.Core.SaveBridge" preserve="all"/>
+		<type fullname="HeroDefense.Config.ConfigBridge" preserve="all"/>
+		<type fullname="HeroDefense.Battle.BattleBridge" preserve="all"/>
+		
+	</assembly>
+
+</linker>

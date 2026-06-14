@@ -1,0 +1,134 @@
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace HeroDefense.Battle
+{
+    /// <summary>
+    /// 逐帧 sprite 翻播（MVP 阶段：idle/walk/attack/death 3-4 帧/单位）。
+    ///
+    /// 设计原则（CLAUDE.md §1）：
+    ///   - 不是协程（避 GC）：用 LateUpdate 累计 dt 切帧
+    ///   - 0 SerializeField：业务调 Play(state, frames, fps) 时传入帧数组
+    ///   - 不写"何时切动作"的业务逻辑（仅播放帧），何时 idle / attack / death 由 Lua 决定
+    ///
+    /// 兼容 HitFeedback Hit-Stop：响应 OnHitStopBegin / OnHitStopEnd SendMessage 暂停。
+    /// </summary>
+    public class SpriteAnimator : MonoBehaviour
+    {
+        // ============ 运行时帧表 ============
+        private SpriteRenderer _sr;
+        private string _curState;
+        private Sprite[] _curFrames;
+        private float _curFps = 16f;  // 2026-05-28: 8→16 (用户：8 FPS 视觉卡顿)
+        private int _curFrameIdx;
+        private float _accumTime;
+        private bool _looping = true;
+        private bool _playing;
+
+        // 持续态记忆：最近一次循环动画（idle/walk）。一次性动画（attack）播完后自动切回此态，
+        // 否则单位/怪会僵在攻击末帧。die 例外：播完停在末帧（尸体）。
+        private string _restState;
+        private Sprite[] _restFrames;
+        private float _restFps = 16f;  // 2026-05-28: 8→16 同步
+
+        /// <summary>sprite 基础 key（如 "monster/yellow_turban_grunt"），
+        /// BattleBridge.Battle_PlayAnim 拼成 "{key}_{state}_{frame}.png" 加载帧列表。</summary>
+        public string SpriteBaseKey;
+
+        /// <summary>动画类型（2026-05-29 Q1 新增）：
+        ///   "atFrame" = 序列帧动画（当前默认，逐张 PNG 切播）
+        ///   "atSpine" = Spine 骨骼动画（数据驱动，需 spine-unity SDK，目前 stub 状态 fallback 到 frame）
+        /// 由 BattleBridge.Battle_SpawnUnit 在 spawn 时按 npc.tab.anim_type 配置注入。
+        /// 怪物等其他实体未配置时默认 atFrame。</summary>
+        public string AnimType = "atFrame";
+
+        // Hit-Stop 兼容（HitFeedback.cs OnHitStopBegin/End SendMessage）
+        private bool _hitStopped;
+
+        private void Awake()
+        {
+            _sr = GetComponentInChildren<SpriteRenderer>();
+        }
+
+        /// <summary>开始播放某状态。frames 可为 null/空 → 静止显示当前 sprite。
+        /// fps 默认 16（2026-05-28 从 8 提到 16，解决视觉卡顿）。
+        /// 注意：现 idle/walk 6 帧、attack 8 帧素材，fps=16 下 attack 一轮 = 0.5 秒（之前 1 秒），动作节奏视觉变快。</summary>
+        public void Play(string stateName, Sprite[] frames, float fps = 16f, bool looping = true)
+        {
+            _curState = stateName;
+            _curFrames = frames;
+            _curFps = Mathf.Max(0.1f, fps);
+            _curFrameIdx = 0;
+            _accumTime = 0f;
+            _looping = looping;
+            _playing = frames != null && frames.Length > 0;
+
+            // 记住最近一次循环态，供一次性动画播完后回切
+            if (looping && _playing)
+            {
+                _restState = stateName;
+                _restFrames = frames;
+                _restFps = _curFps;
+            }
+
+            if (_playing && _sr != null)
+            {
+                _sr.sprite = frames[0];
+            }
+        }
+
+        public void Stop()
+        {
+            _playing = false;
+            _curState = null;
+            _curFrames = null;
+        }
+
+        public string CurrentState => _curState;
+        public bool IsPlaying => _playing;
+
+        /// <summary>给 HitFeedback Hit-Stop 用。</summary>
+        public void OnHitStopBegin() { _hitStopped = true; }
+        public void OnHitStopEnd() { _hitStopped = false; }
+
+        private void LateUpdate()
+        {
+            if (!_playing || _hitStopped) return;
+            if (_curFrames == null || _curFrames.Length <= 1) return;
+            if (_sr == null)
+            {
+                _sr = GetComponentInChildren<SpriteRenderer>();
+                if (_sr == null) return;
+            }
+
+            _accumTime += Time.deltaTime;
+            float frameDur = 1f / _curFps;
+            if (_accumTime < frameDur) return;
+
+            // 一次跳一帧（避免大 dt 时跳多帧造成动画失真，宁可漏帧也保线性）
+            _accumTime -= frameDur;
+            _curFrameIdx++;
+            if (_curFrameIdx >= _curFrames.Length)
+            {
+                if (_looping)
+                {
+                    _curFrameIdx = 0;
+                }
+                else
+                {
+                    // 一次性动画播完：attack 等回到持续态（idle/walk）；die 停在末帧（尸体）
+                    _curFrameIdx = _curFrames.Length - 1;
+                    _playing = false;
+                    _sr.sprite = _curFrames[_curFrameIdx];
+                    if (_curState != "die" && _curState != _restState
+                        && _restFrames != null && _restFrames.Length > 0)
+                    {
+                        Play(_restState, _restFrames, _restFps, true);
+                    }
+                    return;
+                }
+            }
+            _sr.sprite = _curFrames[_curFrameIdx];
+        }
+    }
+}
