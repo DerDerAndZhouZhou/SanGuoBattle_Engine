@@ -8,7 +8,7 @@ namespace HeroDefense.Engine.Host
     /// <summary>
     /// 环境无关的资源读取层。业务代码不感知资源来源。
     /// 平台支持：
-    ///   Editor:      {ProjectRoot}/../Game/
+    ///   Editor:      {ProjectRoot}/../Product/Game/
     ///   Standalone:  exe 所在目录向上搜 settings/Enum.tab
     ///   WebGL/其他:  主 = persistentDataPath/Game；回落 = StreamingAssets/Game
     ///
@@ -38,8 +38,9 @@ namespace HeroDefense.Engine.Host
             if (_initialized) return;
 
 #if UNITY_EDITOR
+            // 五层重组后业务仓位于 Product/（引擎与 Product 平级）：{engine}/../Product/Game
             string projectRoot = Directory.GetParent(Application.dataPath).FullName;
-            _baseDir = Path.GetFullPath(Path.Combine(projectRoot, "..", "Game"));
+            _baseDir = Path.GetFullPath(Path.Combine(projectRoot, "..", "Product", "Game"));
             _fallbackBaseDir = null;
 #elif UNITY_STANDALONE
             string exeDir = Path.GetDirectoryName(Application.dataPath);

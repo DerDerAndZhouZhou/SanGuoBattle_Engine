@@ -623,18 +623,18 @@ namespace HeroDefense.EditorTools
         // 公共辅助
         // ====================================================================
 
-        /// <summary>返回 {ProjectRoot}/../Game 的绝对路径。</summary>
+        /// <summary>返回 {ProjectRoot}/../Product/Game 的绝对路径（业务仓在 Product/ 下，与引擎平级）。</summary>
         public static string GetGameRoot()
         {
             string projectRoot = Directory.GetParent(Application.dataPath).FullName;
-            return Path.GetFullPath(Path.Combine(projectRoot, "..", "Game"));
+            return Path.GetFullPath(Path.Combine(projectRoot, "..", "Product", "Game"));
         }
 
-        /// <summary>返回 {RepoRoot} 即 HeroDefenseEngine 的上一级。</summary>
+        /// <summary>返回 {RepoRoot} 即业务仓 Product/（引擎上一级的 Product 子目录）。</summary>
         private static string GetRepoRoot()
         {
             string projectRoot = Directory.GetParent(Application.dataPath).FullName;
-            return Path.GetFullPath(Path.Combine(projectRoot, ".."));
+            return Path.GetFullPath(Path.Combine(projectRoot, "..", "Product"));
         }
 
         // ====================================================================
