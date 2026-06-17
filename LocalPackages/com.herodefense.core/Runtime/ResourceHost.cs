@@ -9,7 +9,7 @@ namespace HeroDefense.Engine.Host
     /// 环境无关的资源读取层。业务代码不感知资源来源。
     /// 平台支持：
     ///   Editor:      {ProjectRoot}/../Game/
-    ///   Standalone:  exe 所在目录向上搜 config/Enum.tab
+    ///   Standalone:  exe 所在目录向上搜 settings/Enum.tab
     ///   WebGL/其他:  主 = persistentDataPath/Game；回落 = StreamingAssets/Game
     ///
     /// 设计思路：
@@ -47,15 +47,15 @@ namespace HeroDefense.Engine.Host
             bool found = false;
             for (int i = 0; i < 5; i++)
             {
-                // 包内布局优先：exeDir/Game/config/Enum.tab（PC 内测包 Build Windows 用此布局）
-                if (File.Exists(Path.Combine(searchDir, "Game", "config", "Enum.tab")))
+                // 包内布局优先：exeDir/Game/settings/Enum.tab（PC 内测包 Build Windows 用此布局）
+                if (File.Exists(Path.Combine(searchDir, "Game", "settings", "Enum.tab")))
                 {
                     _baseDir = Path.GetFullPath(Path.Combine(searchDir, "Game"));
                     found = true;
                     break;
                 }
-                // 源工程布局兼容：searchDir/config/Enum.tab（exe 放在 Game/dist/Windows/ 时向上搜到 Game/）
-                if (File.Exists(Path.Combine(searchDir, "config", "Enum.tab")))
+                // 源工程布局兼容：searchDir/settings/Enum.tab（exe 放在 Game/dist/Windows/ 时向上搜到 Game/）
+                if (File.Exists(Path.Combine(searchDir, "settings", "Enum.tab")))
                 {
                     _baseDir = Path.GetFullPath(searchDir);
                     found = true;
@@ -68,7 +68,7 @@ namespace HeroDefense.Engine.Host
             if (!found)
             {
                 _baseDir = Path.GetFullPath(Path.Combine(exeDir, "..", ".."));
-                Debug.LogWarning($"[ResourceHost] Standalone 向上搜索未找到 (Game/)config/Enum.tab，fallback 到 {_baseDir}");
+                Debug.LogWarning($"[ResourceHost] Standalone 向上搜索未找到 (Game/)settings/Enum.tab，fallback 到 {_baseDir}");
             }
             _fallbackBaseDir = null;
 #else
@@ -81,14 +81,14 @@ namespace HeroDefense.Engine.Host
                       (string.IsNullOrEmpty(_fallbackBaseDir) ? "" : $"，fallback = {_fallbackBaseDir}"));
 
             TryLoadManifest();
-            LoadAtlasIndex();  // 2026-05-29 (Q3): 扫 Game/art/atlas/*.xml 建索引，LoadSprite 会优先查它
+            LoadAtlasIndex();  // 2026-05-29 (Q3): 扫 Game/resources/art/atlas/*.xml 建索引，LoadSprite 会优先查它
 
-            if (!Directory.Exists(Path.Combine(_baseDir, "config")) && !ManifestHasPrefix("config/"))
+            if (!Directory.Exists(Path.Combine(_baseDir, "settings")) && !ManifestHasPrefix("settings/"))
             {
-                if (!string.IsNullOrEmpty(_fallbackBaseDir) && Directory.Exists(Path.Combine(_fallbackBaseDir, "config")))
-                    Debug.Log($"[ResourceHost] config/ 走 fallback 路径: {_fallbackBaseDir}");
+                if (!string.IsNullOrEmpty(_fallbackBaseDir) && Directory.Exists(Path.Combine(_fallbackBaseDir, "settings")))
+                    Debug.Log($"[ResourceHost] settings/ 走 fallback 路径: {_fallbackBaseDir}");
                 else
-                    Debug.LogError($"[ResourceHost] baseDir 下未找到 config/ 目录: {_baseDir}");
+                    Debug.LogError($"[ResourceHost] baseDir 下未找到 settings/ 目录: {_baseDir}");
             }
         }
 
@@ -178,9 +178,9 @@ namespace HeroDefense.Engine.Host
 
         /// <summary>
         /// 按 Game/ 相对路径加载 PNG 为 Sprite（PPU=100）。
-        /// 例：LoadSprite("art/grid/cell_unlocked.png")，对应 Game/art/grid/cell_unlocked.png。
+        /// 例：LoadSprite("resources/art/grid/cell_unlocked.png")，对应 Game/resources/art/grid/cell_unlocked.png。
         /// 配置表的 sprite_key 字段建议存不带后缀的相对路径前缀（如 "grid/cell_unlocked"），
-        /// 业务代码补成 "art/{key}.png" 后调用本方法。
+        /// 业务代码补成 "resources/art/{key}.png" 后调用本方法。
         /// </summary>
         public static Sprite LoadSprite(string relPath) => LoadSprite(relPath, true);
 
@@ -245,18 +245,18 @@ namespace HeroDefense.Engine.Host
         // Atlas XML 索引（2026-05-29 Q3 新增）
         //
         // 约定:
-        //   - Game/art/atlas/<atlas_name>.xml + Game/art/atlas/<atlas_name>.png
+        //   - Game/resources/art/atlas/<atlas_name>.xml + Game/resources/art/atlas/<atlas_name>.png
         //   - 启动期扫描所有 *.xml 建索引；LoadSprite 优先查 atlas
         //   - 未配 atlas 的 key 走单 PNG 兜底 → 双轨可共存
         //
         // XML 格式（HeroDefense 自定义 v1）:
-        //   <Atlas name="hero_lv_bu" texture="art/atlas/hero_lv_bu.png" width="2048" height="2048">
-        //     <Frame key="art/hero/lv_bu_idle_0.png" x="0"   y="0"   w="256" h="384" pivot_x="0.5" pivot_y="0" />
-        //     <Frame key="art/hero/lv_bu_idle_1.png" x="256" y="0"   w="256" h="384" pivot_x="0.5" pivot_y="0" />
+        //   <Atlas name="hero_lv_bu" texture="resources/art/atlas/hero_lv_bu.png" width="2048" height="2048">
+        //     <Frame key="resources/art/hero/lv_bu_idle_0.png" x="0"   y="0"   w="256" h="384" pivot_x="0.5" pivot_y="0" />
+        //     <Frame key="resources/art/hero/lv_bu_idle_1.png" x="256" y="0"   w="256" h="384" pivot_x="0.5" pivot_y="0" />
         //     ...
         //   </Atlas>
         //
-        // key 字段写**完整 relPath**（与 LoadSprite(relPath) 调用一致；含 "art/" 前缀 + ".png" 后缀），
+        // key 字段写**完整 relPath**（与 LoadSprite(relPath) 调用一致；含 "resources/art/" 前缀 + ".png" 后缀），
         // 不做字符串处理，最简单匹配。
         //
         // 坐标系: Frame 的 x/y 是 atlas image 中**从顶部起算**（TexturePacker 默认），
@@ -278,15 +278,15 @@ namespace HeroDefense.Engine.Host
         public static int AtlasCount => _atlasTextureCache.Count;
         public static int AtlasFrameKeyCount => _atlasIndex.Count;
 
-        /// <summary>扫 Game/art/atlas/*.xml 建索引。Boot 自动调用。可被外部 reload。</summary>
+        /// <summary>扫 Game/resources/art/atlas/*.xml 建索引。Boot 自动调用。可被外部 reload。</summary>
         public static void LoadAtlasIndex()
         {
             _atlasIndex.Clear();
             // 注意：_atlasTextureCache 不清 — 复用已加载纹理
-            var xmlFiles = EnumerateFiles("art/atlas", "*.xml");
+            var xmlFiles = EnumerateFiles("resources/art/atlas", "*.xml");
             if (xmlFiles == null || xmlFiles.Count == 0)
             {
-                Debug.Log("[ResourceHost] art/atlas/ 无 .xml 文件，atlas 路径未启用（单 PNG 兜底）");
+                Debug.Log("[ResourceHost] resources/art/atlas/ 无 .xml 文件，atlas 路径未启用（单 PNG 兜底）");
                 return;
             }
             int atlasOk = 0, atlasFail = 0;

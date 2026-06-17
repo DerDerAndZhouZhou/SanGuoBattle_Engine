@@ -13,11 +13,15 @@ using XLua;
 namespace HeroDefense.Engine.Host
 {
     /// <summary>
-    /// Lua 虚拟机门面，统一暴露 Include / LoadModuleListFromFile / LoadAllModule
-    /// 业务 Lua 全部走 Game/lua 目录，通过 ResourceHost 读取。
+    /// Lua 虚拟机门面，统一暴露 Include / LoadModuleListFromFile / LoadAllModule。
+    /// 业务 Lua 走 Game/ 下 scripts(框架) / modules(业务) / ui(界面) 三层，通过 ResourceHost 读取（五层重组 v3）。
     /// </summary>
     public static class LuaHost
     {
+        /// <summary>当前打包/运行作用域（≈BHQSL m_strRunPlace）。决定 config.xml 加载哪个作用域段 + manifest 打包过滤。
+        /// 客户端唯一作用域；未来服务器版改此值即切换作用域（五层重组 v3, 2026-06-17）。</summary>
+        public const string ActiveScope = "GameClient";
+
 #if XLUA
         private static LuaEnv _env;
         public static LuaEnv Env => _env;
@@ -156,15 +160,40 @@ namespace HeroDefense.Engine.Host
             // Ad_Show(placement, luaCallback) — 回调用 LuaFunction 形态规避 delegate 生成配置坑（R2）
             _env.Global.Set("Ad_Show",        (System.Action<string, LuaFunction>)   AdBridge.Show);
 
+            // ============ 热更 UI 桥（阶段0：XML→UGUI 运行时构建，仿 BHQSL；见 Docs/bhqsl-ui-research-2026-06.md） ============
+            // UI 结构 = Game/ui/*.xml（CDN 热更），逻辑 = Game/lua/ui/*.lua；改面板不重打包。
+            // 构建核心 = UIXmlBuilder（可抽共享包）；HDUIXmlHost = 游戏端胶水（接 ResourceHost/LuaHost）。
+            _env.Global.Set("UI_LoadPanel",    (System.Func<string, GameObject>)              UI.Xml.HDUIXmlHost.LoadPanel);
+            _env.Global.Set("UI_ReloadPanel",  (System.Func<string, GameObject>)              UI.Xml.HDUIXmlHost.ReloadPanel);
+            _env.Global.Set("UI_DestroyPanel", (System.Action<string>)                        UI.Xml.HDUIXmlHost.DestroyPanel);
+            _env.Global.Set("UI_Find",         (System.Func<GameObject, string, GameObject>)  UI.Xml.HDUIXmlHost.Find);
+            _env.Global.Set("UI_SetText",      (System.Action<GameObject, string>)            UI.Xml.HDUIXmlHost.SetText);
+            _env.Global.Set("UI_GetText",      (System.Func<GameObject, string>)              UI.Xml.HDUIXmlHost.GetText);
+            _env.Global.Set("UI_SetImage",     (System.Action<GameObject, string>)            UI.Xml.HDUIXmlHost.SetImage);
+            _env.Global.Set("UI_SetColor",     (System.Action<GameObject, string>)            UI.Xml.HDUIXmlHost.SetColor);
+            _env.Global.Set("UI_SetFill",      (System.Action<GameObject, float>)             UI.Xml.HDUIXmlHost.SetFill);
+            _env.Global.Set("UI_SetChecked",   (System.Action<GameObject, bool>)              UI.Xml.HDUIXmlHost.SetChecked);
+            _env.Global.Set("UI_GetChecked",   (System.Func<GameObject, bool>)                UI.Xml.HDUIXmlHost.GetChecked);
+            _env.Global.Set("UI_BindClick",    (System.Action<GameObject, string>)            UI.Xml.HDUIXmlHost.BindClick);
+            _env.Global.Set("UI_CreateFromTemplate", (System.Func<GameObject, string, string, GameObject>) UI.Xml.HDUIXmlHost.CreateFromTemplate);
+            _env.Global.Set("UI_DestroyChildren", (System.Action<GameObject>)                 UI.Xml.HDUIXmlHost.DestroyChildren);
+            _env.Global.Set("UI_ReloadTemplates", (System.Action)                             UI.Xml.HDUIXmlHost.ReloadTemplates);
+            _env.Global.Set("UI_SetActive",    (System.Action<GameObject, bool>)              UI.Xml.HDUIXmlHost.SetActive);
+            _env.Global.Set("UI_BringToFront", (System.Action<GameObject>)                    UI.Xml.HDUIXmlHost.BringToFront);
+            _env.Global.Set("UI_AttachDragSource", (System.Action<GameObject, long, string>)  UI.Xml.HDUIXmlHost.AttachDragSource);
+            // 热更 UI 迁移（HUD 簇）：库存/商场面板加载后由 Lua 注入引用给 BattleBridge（拖拽落点遮挡守卫 + slot 反查）
+            _env.Global.Set("Battle_SetInventoryRefs", (System.Action<GameObject, GameObject>) BattleBridge.Battle_SetInventoryRefs);
+            _env.Global.Set("Battle_SetShopRef",       (System.Action<GameObject>)             BattleBridge.Battle_SetShopRef);
+
             EnumRegistry.LoadIfNeeded();
             EnumRegistry.InjectToLua(_env);
 
-            // 基础模块层（modulelist_base.xml 声明 framework + config 模块；按文件夹自动扫 .lua）
-            LoadModuleListFromFile("lua/modulelist_base.xml");
+            // 框架层（scripts/modulelist.xml → scripts 模块；scripts/config.xml 按 ActiveScope 作用域段定序加载·五层重组 v3）
+            LoadModuleListFromFile("scripts/modulelist.xml");
             LoadAllModule();
 
-            // 业务入口
-            IncludeLua("lua/main.lua");
+            // 业务入口（main.lua 在 ui/main/·内部加载 modules/ + ui/ 两层 modulelist）
+            IncludeLua("ui/main/main.lua");
 
             _initialized = true;
             Debug.Log("[LuaHost] 启动完成");
@@ -238,8 +267,11 @@ namespace HeroDefense.Engine.Host
             }
         }
 
-        /// <summary>解析 &lt;Modules&gt;&lt;Module Name="X"/&gt;&lt;/Modules&gt;
-        /// → 扫 lua/X/ 下所有 .lua（递归 + 字母序） → 加到 _pending。</summary>
+        /// <summary>解析 &lt;Modules&gt;&lt;Module Name="X"/&gt;&lt;/Modules&gt; → 逐模块加入 _pending（五层重组 v3）。
+        /// 每个 Module Name = Game 根相对目录（如 "scripts" / "modules/battle" / "ui/inventory"）：
+        ///   必须有 config.xml，按 ActiveScope 作用域段的 &lt;Script File&gt; 显式定序加载（≈BHQSL；
+        ///   无文件夹扫描兜底——缺 config.xml = 跳过+告警，用户 2026-06-18 定）。
+        /// 注释掉某 &lt;Module&gt; 行即不加载该模块（选择性裁剪）。</summary>
         private static void LoadModuleListFromXml(string xmlText)
         {
             XDocument doc;
@@ -257,19 +289,52 @@ namespace HeroDefense.Engine.Host
                 var name = moduleElem.Attribute("Name")?.Value;
                 if (string.IsNullOrEmpty(name)) continue;
                 name = name.Trim().TrimStart('/', '\\').TrimEnd('/', '\\');
-                string relDir = "lua/" + name;
-                var files = ResourceHost.EnumerateFiles(relDir, "*.lua", SearchOption.AllDirectories);
-                files.Sort(System.StringComparer.OrdinalIgnoreCase);
-                int added = 0;
-                foreach (var f in files)
-                {
-                    _pending.Add(f);
-                    added++;
-                }
+                int added = AddModuleScripts(name);
                 Debug.Log($"[LuaHost] module '{name}' 加载 {added} 个 .lua");
                 totalAdded += added;
             }
             Debug.Log($"[LuaHost] XML modulelist 共 {totalAdded} 个 .lua 加入 pending");
+        }
+
+        /// <summary>加载单个模块目录的脚本：必须有 config.xml，按 ActiveScope 段显式定序。
+        /// 无文件夹扫描兜底（用户 2026-06-18 定）——缺 config.xml / 解析失败 = 加载 0 个 + 告警。返回加入数。</summary>
+        private static int AddModuleScripts(string relDir)
+        {
+            // ResourceHost.ReadText 缺文件静默返 null（不打日志），可安全用作 config.xml 探测
+            var cfgText = ResourceHost.ReadText(relDir + "/config.xml");
+            if (string.IsNullOrEmpty(cfgText))
+            {
+                Debug.LogWarning($"[LuaHost] 模块 '{relDir}' 缺 config.xml → 跳过（无文件夹扫描兜底）");
+                return 0;
+            }
+            var ordered = ParseScopedScripts(cfgText, ActiveScope);
+            if (ordered == null)
+            {
+                Debug.LogError($"[LuaHost] '{relDir}/config.xml' 解析失败 → 加载 0 个（无文件夹扫描兜底）");
+                return 0;
+            }
+            foreach (var f in ordered) _pending.Add(f);
+            return ordered.Count;
+        }
+
+        /// <summary>解析 config.xml 指定作用域段 → 有序 Script File 列表。
+        /// 返回 null = 解析失败（调用方回退扫描）；空 list = 该作用域无脚本（合法，加载 0 个）。</summary>
+        private static List<string> ParseScopedScripts(string xmlText, string scope)
+        {
+            XDocument doc;
+            try { doc = XDocument.Parse(xmlText); }
+            catch { return null; }
+            if (doc.Root == null) return null;
+            var result = new List<string>();
+            var scopeElem = doc.Root.Element(scope);
+            if (scopeElem == null) return result;   // 缺该作用域段 → 本作用域不加载此模块（合法）
+            foreach (var s in scopeElem.Elements("Script"))
+            {
+                var file = s.Attribute("File")?.Value;
+                if (string.IsNullOrEmpty(file)) continue;
+                result.Add(file.Trim().Replace('\\', '/'));
+            }
+            return result;
         }
 
         /// <summary>加载 _pending 里全部模块（幂等 + 清空 pending）。</summary>
@@ -352,7 +417,7 @@ namespace HeroDefense.Engine.Host
         }
 
         /// <summary>
-        /// 加载音频。Game/art/sfx/ 或 Game/art/bgm/ 下的 .wav / .mp3 / .ogg。
+        /// 加载音频。Game/resources/art/sfx/ 或 Game/resources/art/bgm/ 下的 .wav / .mp3 / .ogg。
         /// </summary>
         public static AudioClip LoadAudio(string relPath)
         {

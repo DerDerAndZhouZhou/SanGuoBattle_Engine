@@ -28,11 +28,15 @@ namespace HeroDefense.UI
         float _pollAccum;
         const float POLL_INTERVAL = 0.2f;
 
-        void Start() => Wire();
+        // ⚠ 已迁移到热更 UI：关卡选择现由 wnd_main_menu.xml/.lua 实现（MainMenu_* / LevelSelect_*）。本控制器惰性。
+        static readonly bool MIGRATED_TO_XML = true;
+
+        void Start() { if (MIGRATED_TO_XML) return; Wire(); }
 
         // Tab 切换可能在 Start 之前 / 之后 → 再绑一次（_wired 守卫幂等）
         void OnEnable()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI
             Wire();
             // 每次 Tab 显示时刷新窗口（选中关可能在局内已推进）
             RefreshLevelSelect();
@@ -41,6 +45,7 @@ namespace HeroDefense.UI
 
         void Update()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI
             _pollAccum += Time.unscaledDeltaTime;
             if (_pollAccum < POLL_INTERVAL) return;
             _pollAccum = 0f;
@@ -104,8 +109,8 @@ namespace HeroDefense.UI
                     string thumbKey = CallString("LevelSelect_GetThumbKey");
                     if (!string.IsNullOrEmpty(thumbKey))
                     {
-                        var sp = LuaHost.LoadSprite("art/bg/" + thumbKey + ".png", logMissing: false)
-                              ?? LuaHost.LoadSprite("art/bg/" + thumbKey + ".jpg", logMissing: false);
+                        var sp = LuaHost.LoadSprite("resources/art/bg/" + thumbKey + ".png", logMissing: false)
+                              ?? LuaHost.LoadSprite("resources/art/bg/" + thumbKey + ".jpg", logMissing: false);
                         if (sp != null) _thumbImg.sprite = sp;
                     }
                 }

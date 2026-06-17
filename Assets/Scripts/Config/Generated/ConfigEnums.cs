@@ -1,4 +1,4 @@
-// 枚举容器类 —— 字段名必须与 Game/config/Enum.txt 保持一致。
+// 枚举容器类 —— 字段名必须与 Game/settings/Enum.tab 保持一致。
 // 值在启动时由 EnumRegistry.Load() 反射填充（不依赖 UnityEditor）。
 // 新增枚举类型时：① Enum.txt 添加行；② 本文件追加同名 static class + public static int 字段。
 // 17 类枚举（v3 对局架构），与 Enum.txt 一一对应。

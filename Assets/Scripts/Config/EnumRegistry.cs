@@ -48,10 +48,10 @@ namespace HeroDefense.Config
             _enums.Clear();
             _enumReverse.Clear();
 
-            var text = ResourceHost.ReadText("config/Enum.tab");
+            var text = ResourceHost.ReadText("settings/Enum.tab");
             if (string.IsNullOrEmpty(text))
             {
-                Debug.LogError("[EnumRegistry] Enum.tab 未找到（这是严重的配置缺失：所有 Enum_ 类型字段将解析为 0，Lua 侧枚举常量也不会注入）。请检查 Game/config/Enum.tab 是否存在。");
+                Debug.LogError("[EnumRegistry] Enum.tab 未找到（这是严重的配置缺失：所有 Enum_ 类型字段将解析为 0，Lua 侧枚举常量也不会注入）。请检查 Game/settings/Enum.tab 是否存在。");
                 return;
             }
 

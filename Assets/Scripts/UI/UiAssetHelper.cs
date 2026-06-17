@@ -36,7 +36,7 @@ namespace HeroDefense.UI
             var entry = Lookup(assetId);
             Sprite sprite = null;
             if (!string.IsNullOrEmpty(entry.spriteKey))
-                sprite = ResourceHost.LoadSprite("art/" + entry.spriteKey);
+                sprite = ResourceHost.LoadSprite("resources/art/" + entry.spriteKey);
 
             if (sprite == null)
             {
@@ -58,7 +58,7 @@ namespace HeroDefense.UI
             var entry = Lookup(assetId);
             Sprite sprite = null;
             if (!string.IsNullOrEmpty(entry.spriteKey))
-                sprite = ResourceHost.LoadSprite("art/" + entry.spriteKey);
+                sprite = ResourceHost.LoadSprite("resources/art/" + entry.spriteKey);
             if (sprite == null) sprite = GetOrCreatePlaceholderSprite(assetId);
             sr.sprite = sprite;
             sr.color = entry.tintColor.HasValue ? entry.tintColor.Value : Color.white;

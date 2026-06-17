@@ -65,10 +65,13 @@ namespace HeroDefense.Battle
             {
                 var root = GameObject.Find("RootWindow");
                 if (root == null) { Debug.LogWarning("[BSC] RootWindow 未找到"); return; }
+                // 已迁热更 UI：旧 MainWindow + 旧 BattleHud 均始终抑制；新 XML 主菜单/HUD/库存/商场经 *_Open/Close 显隐
                 var mw = root.transform.Find("MainWindow");
-                if (mw != null) mw.gameObject.SetActive(show);
+                if (mw != null) mw.gameObject.SetActive(false);
                 var hud = root.transform.Find("BattleHud");
-                if (hud != null) hud.gameObject.SetActive(!show);  // 进对局 show=false → 开 HUD
+                if (hud != null) hud.gameObject.SetActive(false);
+                HeroDefense.Engine.Host.LuaHost.CallGlobal(show ? "MainMenu_Open" : "MainMenu_Close");
+                HeroDefense.Engine.Host.LuaHost.CallGlobal(show ? "BattleHud_Close" : "BattleHud_Open");
             }
             catch (System.Exception e)
             {
@@ -175,8 +178,8 @@ namespace HeroDefense.Battle
                 string battleBgKey = cm.GetValue<string>(row, "scene_bg_key", "chapter_1_yellow_turban");
                 string skyBgKey = cm.GetValue<string>(row, "sky_bg_key", "sky_dusk");
 
-                ApplyOneBgWithExtFallback("Battle_Bg", "art/bg/" + battleBgKey, fitCamera: true);
-                ApplyOneBgWithExtFallback("Sky_Bg", "art/bg/" + skyBgKey, fitCamera: false);
+                ApplyOneBgWithExtFallback("Battle_Bg", "resources/art/bg/" + battleBgKey, fitCamera: true);
+                ApplyOneBgWithExtFallback("Sky_Bg", "resources/art/bg/" + skyBgKey, fitCamera: false);
             }
             catch (System.Exception e)
             {
@@ -207,7 +210,7 @@ namespace HeroDefense.Battle
 
         /// <summary>
         /// 背景图加载,支持 .png / .jpg 双扩展名回落(用户可能直接放 jpg)。
-        /// pathNoExt 是不带扩展名的相对路径,如 "art/bg/chapter_1_yellow_turban"。
+        /// pathNoExt 是不带扩展名的相对路径,如 "resources/art/bg/chapter_1_yellow_turban"。
         /// </summary>
         private static void ApplyOneBgWithExtFallback(string tag, string pathNoExt, bool fitCamera = false)
         {

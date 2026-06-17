@@ -15,7 +15,7 @@ namespace HeroDefense.Battle
     ///
     /// v3 实现路线（com.unity.modules.particlesystem 已被裁剪）：
     ///   - **sprite 序列帧 + 自定义池**（不用 ParticleSystem）
-    ///   - 每个 vfx_key 一个 prefab（在 Resources/vfx/<key>.prefab 或 Game/art/vfx/<key>.png 序列）
+    ///   - 每个 vfx_key 一个 prefab（在 Resources/vfx/<key>.prefab 或 Game/resources/art/vfx/<key>.png 序列）
     ///   - prefab 上挂 sprite 序列帧动画组件（Agent C 的 SpriteAnimator 会承载，或本类内置简易播放器）
     ///   - 自动回收：duration 到期 / SpriteAnimator OnFinish 触发
     ///
@@ -55,7 +55,7 @@ namespace HeroDefense.Battle
         private readonly Dictionary<string, Queue<GameObject>> _pools
             = new Dictionary<string, Queue<GameObject>>();
 
-        // v2 批 0（2026-06-13）：vfx 帧序列缓存（按帧前缀；art/vfx/<prefix>_<i>.png 探测到首个缺失为止）。
+        // v2 批 0（2026-06-13）：vfx 帧序列缓存（按帧前缀；resources/art/vfx/<prefix>_<i>.png 探测到首个缺失为止）。
         private readonly Dictionary<string, Sprite[]> _frameCache = new Dictionary<string, Sprite[]>();
         private static readonly Sprite[] _emptyFrames = new Sprite[0];
 
@@ -311,7 +311,7 @@ namespace HeroDefense.Battle
         }
 
         // ============ v2 批 0：帧序列加载（替代空 prefab 路线，让 37 套存量 vfx PNG 可见） ============
-        // 帧前缀 = vfx.tab id（与 art/vfx/<id>_<i>.png 命名一致，37 个里 34 个直接对齐）。
+        // 帧前缀 = vfx.tab id（与 resources/art/vfx/<id>_<i>.png 命名一致，37 个里 34 个直接对齐）。
         // 不用 prefab_key 列：它不可靠——vfx_qinglong_yanyue 行的 prefab_key=vfx/qinglong_yanyue 丢了 vfx_ 前缀，与帧文件名不符。
         // 3 处历史命名漂移（id ≠ 帧文件名）用别名表显式映射，零改 vfx.tab / 零改 art：
         private static readonly Dictionary<string, string> _framePrefixAlias = new Dictionary<string, string>
@@ -326,7 +326,7 @@ namespace HeroDefense.Battle
             return vfxKey;
         }
 
-        // 探测 art/vfx/<prefix>_<i>.png 从 0 递增到首个缺失；结果缓存。无帧返回空数组（→ 走旧 prefab 占位路线）。
+        // 探测 resources/art/vfx/<prefix>_<i>.png 从 0 递增到首个缺失；结果缓存。无帧返回空数组（→ 走旧 prefab 占位路线）。
         private Sprite[] LoadVfxFrames(string prefix)
         {
             if (string.IsNullOrEmpty(prefix)) return _emptyFrames;
@@ -334,7 +334,7 @@ namespace HeroDefense.Battle
             var list = new List<Sprite>(8);
             for (int i = 0; i < 16; i++)
             {
-                var s = LuaHost.LoadSprite($"art/vfx/{prefix}_{i}.png", false);
+                var s = LuaHost.LoadSprite($"resources/art/vfx/{prefix}_{i}.png", false);
                 if (s == null) break;
                 list.Add(s);
             }

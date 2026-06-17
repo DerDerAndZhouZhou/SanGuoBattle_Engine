@@ -47,8 +47,13 @@ namespace HeroDefense.UI
         const float POLL_INTERVAL = 0.3f;
         string _lastHash = "";
 
+        // ⚠ 已迁热更 UI：库存现由 wnd_inventory.xml/.lua 实现（List + inv_card 模板 + UI_AttachDragSource 挂 DragInputBridge）。
+        //   旧 BattleHud GO 始终抑制，本控制器惰性；验证后删组件+脚本+场景节点。
+        static readonly bool MIGRATED_TO_XML = true;
+
         void OnEnable()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI
             ResolveChildren();
             EnsureLeftStripLayout();
             TrySyncFromLua();
@@ -56,6 +61,7 @@ namespace HeroDefense.UI
 
         void Update()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI
             _pollAccum += Time.unscaledDeltaTime;
             if (_pollAccum < POLL_INTERVAL) return;
             _pollAccum = 0;
@@ -341,8 +347,8 @@ namespace HeroDefense.UI
                 var img = card.GetComponent<Image>();
                 string cardKey = LookupCardSpriteKey(npcId);
                 Sprite sprite = null;
-                if (!string.IsNullOrEmpty(cardKey)) sprite = ResourceHost.LoadSprite($"art/{cardKey}.png");
-                if (sprite == null) sprite = ResourceHost.LoadSprite($"art/{spriteKey}_idle_0.png");
+                if (!string.IsNullOrEmpty(cardKey)) sprite = ResourceHost.LoadSprite($"resources/art/{cardKey}.png");
+                if (sprite == null) sprite = ResourceHost.LoadSprite($"resources/art/{spriteKey}_idle_0.png");
                 if (sprite != null) img.sprite = sprite;
                 img.color = new Color(1f, 1f, 1f, 1f);
                 img.raycastTarget = true;

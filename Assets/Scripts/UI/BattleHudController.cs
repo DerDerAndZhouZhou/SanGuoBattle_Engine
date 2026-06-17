@@ -31,8 +31,13 @@ namespace HeroDefense.UI
         float _pollAccum;
         const float POLL_INTERVAL = 0.2f;
 
+        // ⚠ 已迁热更 UI：HUD 横条由 wnd_battle_hud.xml/.lua 实现（库存=wnd_inventory、商场=wnd_shop）。
+        //   旧 BattleHud GO 由 BattleSceneController 始终 SetActive(false) 抑制，本控制器惰性；验证后删组件+脚本+场景节点。
+        static readonly bool MIGRATED_TO_XML = true;
+
         void OnEnable()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI
             EnsureControllers();   // T208/T209 (2026-05-21)：保证 SkillCard / DamageStats controller 挂载（程序化构建 modal）
             ResolveChildren();
             BindButtons();
@@ -56,16 +61,19 @@ namespace HeroDefense.UI
                 var bottomBar = transform.Find("BottomBar");
                 var sideBar = transform.Find("SideBar");
 
-                // 1) 波次 → 经验条右
+                // 1) 波次 + 倒计时 → 底栏正上方居中、放大（2026-06-15 用户：原贴屏幕底边、字小到几乎看不见 → 放大 + 上移）
                 if (_waveText != null && bottomBar != null && _waveText.transform.parent != bottomBar)
                 {
                     var rt = _waveText.GetComponent<RectTransform>();
                     _waveText.transform.SetParent(bottomBar, false);
                     rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-                    rt.pivot = new Vector2(0f, 0.5f);
-                    rt.sizeDelta = new Vector2(360, 32);
-                    rt.anchoredPosition = new Vector2(252, 0);   // 经验条宽 480 居中 → 右缘 240 + 12 间距
-                    _waveText.alignment = TextAnchor.MiddleLeft;
+                    rt.pivot = new Vector2(0.5f, 0.5f);
+                    rt.sizeDelta = new Vector2(560, 64);
+                    rt.anchoredPosition = new Vector2(0, 80);    // 居中 + 上移离开屏幕底边（原 (252,0) 贴底太小）
+                    _waveText.alignment = TextAnchor.MiddleCenter;
+                    _waveText.resizeTextForBestFit = false;      // 防 best-fit 覆盖 fontSize
+                    _waveText.fontSize = 48;                     // 32 → 48 放大
+                    _waveText.horizontalOverflow = HorizontalWrapMode.Overflow;  // 防换行裁切
                 }
 
                 // 2) 倍速 + 暂停 → SideBar 竖排（Btn_damage=-107 下方，按既有 84 间距）
@@ -110,9 +118,8 @@ namespace HeroDefense.UI
 
         void EnsureControllers()
         {
-            // 场景资产里未挂 controller 时动态 AddComponent；已挂则跳过
-            if (GetComponent<SkillCardController>() == null) gameObject.AddComponent<SkillCardController>();
-            if (GetComponent<DamageStatsController>() == null) gameObject.AddComponent<DamageStatsController>();
+            // SkillCard / DamageStats 已迁热更 UI（wnd_skill_card / wnd_damage_stats，HUD 按钮转调 Lua toggle），不再挂 C# 控制器。
+            // Shop 暂未迁（待后续批次），仍动态挂载。
             if (GetComponent<ShopController>() == null) gameObject.AddComponent<ShopController>();   // Phase4-D 商场
         }
 
@@ -132,6 +139,7 @@ namespace HeroDefense.UI
 
         void Update()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI
             // R3c 自愈兜底：OnEnable 与 domain reload/场景激活时序偶发错过重排（实测一次）→ 首帧补一次。
             // ApplyLayoutV2 幂等（按目标父节点判重），多调无副作用。
             if (!_layoutApplied)
@@ -231,48 +239,14 @@ namespace HeroDefense.UI
 
         void OnSkillCardClicked()
         {
-            // 优先调 SkillCardController.Toggle
-            var ctrl = GetComponent<SkillCardController>();
-            if (ctrl == null) ctrl = GetComponentInChildren<SkillCardController>(true);
-            if (ctrl != null)
-            {
-                ctrl.Toggle();
-                return;
-            }
-            // 回退：直接按 Tag 切 panel 显示
-            var panel = GameObject.FindWithTag("Panel_SkillCard");
-            if (panel != null)
-            {
-                panel.SetActive(!panel.activeSelf);
-                Debug.Log("[BattleHud] SkillCard panel → " + panel.activeSelf + "（无 controller，fallback toggle）");
-            }
-            else
-            {
-                Debug.LogWarning("[BattleHud] Panel_SkillCard 未找到，特效按钮无效");
-            }
+            // 已迁热更 UI：转调 Lua 全局 SkillCardWnd_Toggle（Game/lua/ui/wnd_skill_card.lua）
+            CallLua("SkillCardWnd_Toggle");
         }
 
         void OnDamageStatsClicked()
         {
-            // 优先调 DamageStatsController.Toggle（在 BattleHud 自己 / 兄弟节点上）
-            var ctrl = GetComponent<DamageStatsController>();
-            if (ctrl == null) ctrl = GetComponentInChildren<DamageStatsController>(true);
-            if (ctrl != null)
-            {
-                ctrl.Toggle();
-                return;
-            }
-            // 回退：直接按 Tag 切 panel 显示
-            var panel = GameObject.FindWithTag("Panel_DamageStats");
-            if (panel != null)
-            {
-                panel.SetActive(!panel.activeSelf);
-                Debug.Log("[BattleHud] DamageStats panel → " + panel.activeSelf + "（无 controller，fallback toggle）");
-            }
-            else
-            {
-                Debug.LogWarning("[BattleHud] Panel_DamageStats 未找到，伤害统计按钮无效");
-            }
+            // 已迁热更 UI：转调 Lua 全局 DmgStats_Toggle（Game/lua/ui/wnd_damage_stats.lua）
+            CallLua("DmgStats_Toggle");
         }
 
         void PollAndUpdate()

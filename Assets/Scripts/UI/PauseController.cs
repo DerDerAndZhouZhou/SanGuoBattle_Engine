@@ -25,8 +25,14 @@ namespace HeroDefense.UI
         const float POLL_INTERVAL = 0.2f;
         bool _lastPaused;
 
+        // ⚠ 已迁移到热更 UI：暂停面板现由 Game/ui/wnd_pause.xml + Game/lua/ui/wnd_pause.lua 实现
+        //   （wnd_pause.lua 监听 "BattlePaused" 事件懒加载并显隐）。本 C# 控制器置惰性、不再构建遮罩，
+        //   以免与 XML 面板重复。验证通过后将彻底移除本组件 + 删除本脚本（迁移收尾步）。
+        static readonly bool MIGRATED_TO_XML = true;
+
         void OnEnable()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：不再程序化构建暂停遮罩（见上方迁移说明）
             EnsureOverlay();
             _lastPaused = false;
             if (_overlay != null) _overlay.SetActive(false);
@@ -34,6 +40,7 @@ namespace HeroDefense.UI
 
         void Update()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：显隐改由 wnd_pause.lua 事件驱动
             _pollAccum += Time.unscaledDeltaTime;
             if (_pollAccum < POLL_INTERVAL) return;
             _pollAccum = 0;

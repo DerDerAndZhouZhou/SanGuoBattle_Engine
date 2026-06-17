@@ -450,14 +450,14 @@ namespace HeroDefense.Battle
             for (int i = 0; i < ANIM_MAX_FRAMES; i++)
             {
                 // 2026-05-29 (Q5) — 双路径回落:
-                //   优先新结构: art/<baseKey>/atlas/<state>_<i>.png（pack_atlas.py 输出+ atlas xml key 也用此路径）
-                //   兼容旧扁平: art/<baseKey>_<state>_<i>.png（旧美术资源命名）
+                //   优先新结构: resources/art/<baseKey>/atlas/<state>_<i>.png（pack_atlas.py 输出+ atlas xml key 也用此路径）
+                //   兼容旧扁平: resources/art/<baseKey>_<state>_<i>.png（旧美术资源命名）
                 // logMissing=false：探测到首个缺失帧即为终点，不是错误，不刷警告
-                var s = HeroDefense.Engine.Host.LuaHost.LoadSprite($"art/{baseKey}/atlas/{state}_{i}.png", false);
+                var s = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{baseKey}/atlas/{state}_{i}.png", false);
                 if (s == null)
                 {
                     // 旧扁平路径回落
-                    s = HeroDefense.Engine.Host.LuaHost.LoadSprite($"art/{baseKey}_{state}_{i}.png", false);
+                    s = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{baseKey}_{state}_{i}.png", false);
                 }
                 if (s == null) break;   // 两种路径都没 → 该状态帧数 = i
                 list.Add(s);
@@ -492,9 +492,9 @@ namespace HeroDefense.Battle
         {
             if (_fallbackSprite != null) return _fallbackSprite;
             // 优先用枪兵 idle_0 作为兜底（保证存在）
-            _fallbackSprite = HeroDefense.Engine.Host.LuaHost.LoadSprite("art/unit/spearman_idle_0.png");
+            _fallbackSprite = HeroDefense.Engine.Host.LuaHost.LoadSprite("resources/art/unit/spearman_idle_0.png");
             if (_fallbackSprite == null)
-                _fallbackSprite = HeroDefense.Engine.Host.LuaHost.LoadSprite("art/unit/archer_idle_0.png");
+                _fallbackSprite = HeroDefense.Engine.Host.LuaHost.LoadSprite("resources/art/unit/archer_idle_0.png");
             return _fallbackSprite;
         }
 
@@ -520,16 +520,16 @@ namespace HeroDefense.Battle
             if (anim != null) anim.SpriteBaseKey = spriteKey;
 
             // 2. 尝试加载首帧并显示（多路径回落:
-            //    a) art/{key}.png            — 单图 sprite_key 指向单 PNG（无动画的建筑等）
-            //    b) art/{key}/atlas/idle_0   — 新结构序列帧（2026-05-29 Q5）
-            //    c) art/{key}/atlas/walk_0   — 新结构 walk 备选
-            //    d) art/{key}_idle_0         — 旧扁平兼容
-            //    e) art/{key}_walk_0         — 旧扁平 walk 备选
-            var sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"art/{spriteKey}.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"art/{spriteKey}/atlas/idle_0.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"art/{spriteKey}/atlas/walk_0.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"art/{spriteKey}_idle_0.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"art/{spriteKey}_walk_0.png");
+            //    a) resources/art/{key}.png            — 单图 sprite_key 指向单 PNG（无动画的建筑等）
+            //    b) resources/art/{key}/atlas/idle_0   — 新结构序列帧（2026-05-29 Q5）
+            //    c) resources/art/{key}/atlas/walk_0   — 新结构 walk 备选
+            //    d) resources/art/{key}_idle_0         — 旧扁平兼容
+            //    e) resources/art/{key}_walk_0         — 旧扁平 walk 备选
+            var sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}.png");
+            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}/atlas/idle_0.png");
+            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}/atlas/walk_0.png");
+            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}_idle_0.png");
+            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}_walk_0.png");
             // 3. 所有 fallback 失败 → 用全局兜底，保证 unit 可见（配置错配占位文件时不至于无视觉）
             if (sprite == null) sprite = GetFallbackSprite();
             if (sprite == null) return;
@@ -982,20 +982,20 @@ namespace HeroDefense.Battle
         private static Sprite GetProjectileSprite()
         {
             if (_projectileSprite == null)
-                _projectileSprite = HeroDefense.Engine.Host.LuaHost.LoadSprite("art/projectile/arrow.png");
+                _projectileSprite = HeroDefense.Engine.Host.LuaHost.LoadSprite("resources/art/projectile/arrow.png");
             return _projectileSprite;
         }
 
-        // v2 批1：按 key 取投射物 sprite（art/projectile/<key>.png；缺则 LogWarning + arrow 兜底；空 key 直接默认）。军规2。
+        // v2 批1：按 key 取投射物 sprite（resources/art/projectile/<key>.png；缺则 LogWarning + arrow 兜底；空 key 直接默认）。军规2。
         private static readonly Dictionary<string, Sprite> _projSpriteCache = new Dictionary<string, Sprite>();
         private static Sprite GetProjectileSprite(string key)
         {
             if (string.IsNullOrEmpty(key)) return GetProjectileSprite();
             if (_projSpriteCache.TryGetValue(key, out var s)) return s;
-            var sp = HeroDefense.Engine.Host.LuaHost.LoadSprite($"art/projectile/{key}.png", false);
+            var sp = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/projectile/{key}.png", false);
             if (sp == null)
             {
-                Debug.LogWarning($"[BattleBridge] 投射物贴图缺失 art/projectile/{key}.png → 回退 arrow");
+                Debug.LogWarning($"[BattleBridge] 投射物贴图缺失 resources/art/projectile/{key}.png → 回退 arrow");
                 sp = GetProjectileSprite();
             }
             _projSpriteCache[key] = sp;
@@ -1473,9 +1473,9 @@ namespace HeroDefense.Battle
             EnsureUIGhost();
             if (_uiGhost == null) return;
             // 加载 sprite（与 SetSprite 同 fallback 链）
-            var sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"art/{spriteKey}.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"art/{spriteKey}_idle_0.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"art/{spriteKey}_walk_0.png");
+            var sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}.png");
+            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}_idle_0.png");
+            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}_walk_0.png");
             if (_uiGhostImage != null)
             {
                 _uiGhostImage.sprite = sprite;
@@ -1597,17 +1597,35 @@ namespace HeroDefense.Battle
             return -1;
         }
 
+        // ============ 热更 UI 迁移（2026-06-17 HUD 簇）：库存/商场面板引用由 Lua 注册 ============
+        // 旧版从 BattleHud/InventoryPanel|ShopPanel 查找；迁移后面板在 Panel_RootWindow 下、路径不同，
+        // 改由 Lua 加载面板后调本 setter 注入引用。slotsListGo 传 List 控件根 → 自动解析其 ScrollRect.content 为卡容器。
+        public static void Battle_SetInventoryRefs(GameObject invPanel, GameObject slotsListGo)
+        {
+            _invPanelRT = invPanel != null ? invPanel.transform as RectTransform : null;
+            _invPanelCanvas = invPanel != null ? invPanel.GetComponentInParent<Canvas>() : null;
+            _invSlotsContainer = null;
+            if (slotsListGo != null)
+            {
+                var sr = slotsListGo.GetComponent<UnityEngine.UI.ScrollRect>();
+                _invSlotsContainer = (sr != null && sr.content != null) ? sr.content : slotsListGo.transform;
+            }
+        }
+
+        public static void Battle_SetShopRef(GameObject shopPanel)
+        {
+            _shopPanelRT = shopPanel != null ? shopPanel.transform as RectTransform : null;
+            _shopPanelCanvas = shopPanel != null ? shopPanel.GetComponentInParent<Canvas>() : null;
+        }
+
         private static void EnsureUIGhost()
         {
             if (_uiGhost != null) return;
-            // 优先挂 BattleHud（与 InventoryPanel 同级），fallback 到 RootWindow
+            // 已迁热更 UI：旧 BattleHud 始终 inactive → ghost 改挂 RootWindow（挂 inactive 节点下会不可见）。
+            // ghost SetAsLastSibling 保证渲染在所有 RootWindow 子面板之上。
             GameObject parent = null;
             var rootWindow = GameObject.Find("RootWindow");
-            if (rootWindow != null)
-            {
-                var hud = rootWindow.transform.Find("BattleHud");
-                parent = hud != null ? hud.gameObject : rootWindow;
-            }
+            if (rootWindow != null) parent = rootWindow;
             if (parent == null) return;
 
             _uiGhost = new GameObject("DragGhost",

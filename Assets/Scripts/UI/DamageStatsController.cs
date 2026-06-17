@@ -30,8 +30,14 @@ namespace HeroDefense.UI
         const float POLL_INTERVAL = 0.5f;
         string _lastHash = "";
 
+        // ⚠ 已迁移到热更 UI：伤害统计现由 Game/ui/wnd_damage_stats.xml + lua/ui/wnd_damage_stats.lua 实现
+        //   （HUD 伤害按钮 onClick 转调 Lua DmgStats_Toggle）。本控制器置惰性、不再程序化构建 modal，
+        //   验证通过后将彻底移除本组件 + 删脚本（迁移收尾步）。
+        static readonly bool MIGRATED_TO_XML = true;
+
         void OnEnable()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI
             EnsureModal();
             _lastHash = "";
         }
@@ -47,6 +53,7 @@ namespace HeroDefense.UI
 
         public void Toggle()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI（HUD 改调 Lua DmgStats_Toggle）
             EnsureModal();
             if (_modalRoot == null) return;
             bool show = !_modalRoot.activeSelf;

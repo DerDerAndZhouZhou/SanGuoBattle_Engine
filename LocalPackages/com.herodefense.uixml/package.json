@@ -1,0 +1,8 @@
+{
+  "name": "com.herodefense.uixml",
+  "version": "0.1.0",
+  "displayName": "HeroDefense UIXml Runtime",
+  "description": "XML→UGUI 运行时构建核心（热更 UI 系统的共享层）。host-agnostic：仅依赖 UnityEngine.UI + IUIXmlHost 接口，被游戏引擎(HeroDefenseEngine)与编辑器引擎(uieditorengine)双方引用 → 编辑器预览=游戏渲染，零漂移。",
+  "unity": "2022.3",
+  "author": { "name": "HeroDefense" }
+}

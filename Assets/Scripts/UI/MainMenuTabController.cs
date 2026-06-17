@@ -22,8 +22,14 @@ namespace HeroDefense.UI
         string _currentTab;
         public string CurrentTab => _currentTab;
 
+        // ⚠ 已迁移到热更 UI：主菜单现由 Game/ui/wnd_main_menu.xml + lua/ui/wnd_main_menu.lua 实现
+        //   （UIManager.ShowMainWindow / BattleSceneController.ToggleMainMenuUI 抑制旧 MainWindow 后调 MainMenu_Open/Close）。
+        //   本控制器置惰性，旧 MainWindow 全程 inactive，验证通过后将彻底移除组件 + 删脚本 + 清旧场景节点。
+        static readonly bool MIGRATED_TO_XML = true;
+
         void Start()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：主菜单已迁热更 UI（见上）
             ConfigManager.Instance?.LoadIfNeeded();
             LoadConfig();
             ResolveTabPanels();

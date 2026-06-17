@@ -34,6 +34,10 @@ namespace HeroDefense.Core
         private PlayerSaveData _saveData;
         private GameSettings _settings;
 
+        // 存储后端抽象（五层重组 v3 阶段 B2·2026-06-18）：默认本地 PlayerPrefs；
+        // 接抖音/微信云存档或自建服务器只需 SetBackend(新实现)，业务（Lua Save_*/Profile）零感知。
+        private ISaveBackend _backend = new LocalPrefsBackend();
+
         // 通用 KV 存档运行时索引（核心循环 P0-2：关卡进度等）。
         // LoadAll 时由 _saveData.kvKeys/kvValues 双 list 重建；Save 前 Flush 回写。
         private Dictionary<string, string> _kv;
@@ -70,12 +74,12 @@ namespace HeroDefense.Core
 
         public void LoadAll()
         {
-            string saveJson = PlayerPrefs.GetString(SAVE_KEY, "");
+            string saveJson = _backend.GetString(SAVE_KEY, "");
             _saveData = !string.IsNullOrEmpty(saveJson)
                 ? JsonUtility.FromJson<PlayerSaveData>(saveJson)
                 : new PlayerSaveData();
 
-            string settingsJson = PlayerPrefs.GetString(SETTINGS_KEY, "");
+            string settingsJson = _backend.GetString(SETTINGS_KEY, "");
             _settings = !string.IsNullOrEmpty(settingsJson)
                 ? JsonUtility.FromJson<GameSettings>(settingsJson)
                 : new GameSettings();
@@ -86,16 +90,16 @@ namespace HeroDefense.Core
         public void SaveAll()
         {
             FlushKvIndex();
-            PlayerPrefs.SetString(SAVE_KEY, JsonUtility.ToJson(_saveData));
-            PlayerPrefs.SetString(SETTINGS_KEY, JsonUtility.ToJson(_settings));
-            PlayerPrefs.Save();
+            _backend.SetString(SAVE_KEY, JsonUtility.ToJson(_saveData));
+            _backend.SetString(SETTINGS_KEY, JsonUtility.ToJson(_settings));
+            _backend.Flush();
         }
 
         public void SaveProgress()
         {
             FlushKvIndex();
-            PlayerPrefs.SetString(SAVE_KEY, JsonUtility.ToJson(_saveData));
-            PlayerPrefs.Save();
+            _backend.SetString(SAVE_KEY, JsonUtility.ToJson(_saveData));
+            _backend.Flush();
         }
 
         // ======== 通用 KV 存档（核心循环 P0-2 / P0-3，经 SaveBridge 暴露给 Lua）========
@@ -176,8 +180,16 @@ namespace HeroDefense.Core
         {
             _saveData = new PlayerSaveData();
             _settings = new GameSettings();
-            PlayerPrefs.DeleteAll();
-            PlayerPrefs.Save();
+            _backend.DeleteAll();
+        }
+
+        /// <summary>切换存储后端（本地/抖音云/自建服务器）。切换后重新加载存档。
+        /// 平台启动码按需调用（如抖音平台 boot 时 SetBackend(new DouyinCloudBackend())）；业务 Lua 零感知。</summary>
+        public void SetBackend(ISaveBackend backend)
+        {
+            if (backend == null) return;
+            _backend = backend;
+            LoadAll();
         }
     }
 
@@ -204,5 +216,25 @@ namespace HeroDefense.Core
         public float sfxVolume = 1f;
         public bool isMuted = false;
         public bool vibrationEnabled = true;
+    }
+
+    /// <summary>存储后端抽象（五层重组 v3 阶段 B2·2026-06-18）。
+    /// SaveManager 只认这个接口存取存档 blob（SAVE_KEY/SETTINGS_KEY 两个键）；
+    /// 本地=PlayerPrefs；后续抖音/微信云存档、自建服务器各实现一个，SetBackend 即切换，业务零感知。</summary>
+    public interface ISaveBackend
+    {
+        string GetString(string key, string def);
+        void SetString(string key, string value);
+        void Flush();      // 提交落盘（本地 = PlayerPrefs.Save；云 = 上传）
+        void DeleteAll();  // 清空全部存档
+    }
+
+    /// <summary>本地存储后端：PlayerPrefs（编辑器 / PC / 真机本地）。SaveManager 默认实现。</summary>
+    public class LocalPrefsBackend : ISaveBackend
+    {
+        public string GetString(string key, string def) { return PlayerPrefs.GetString(key, def); }
+        public void SetString(string key, string value) { PlayerPrefs.SetString(key, value); }
+        public void Flush() { PlayerPrefs.Save(); }
+        public void DeleteAll() { PlayerPrefs.DeleteAll(); }
     }
 }

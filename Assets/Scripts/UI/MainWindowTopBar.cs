@@ -33,8 +33,12 @@ namespace HeroDefense.UI
         const int PLACEHOLDER_STAMINA_MAX = 50;
         const int PLACEHOLDER_VIDEO_TICKET = 3;
 
+        // ⚠ 已迁移到热更 UI：顶部资源栏现由 wnd_main_menu.xml(topbar 占位) 实现。本控制器惰性。
+        static readonly bool MIGRATED_TO_XML = true;
+
         void Start()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI
             ConfigManager.Instance.LoadIfNeeded();
             ResolveChildren();
 

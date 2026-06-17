@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Xml.Linq;
 using System.Text;
 using UnityEditor;
 using UnityEngine;
@@ -32,8 +33,9 @@ namespace HeroDefense.EditorTools
 
         private const string PHASE1_OUTPUT_DIR = "Build/Phase1";
 
-        private static readonly string[] ScanSubDirs = { "lua", "config", "art" };
-        // modulelist_*.xml 现在放在 lua/ 下，由 ScanSubDirs="lua" 自动包含；不再需要 root 级附加。
+        // 五层重组 v3（2026-06-17）：scripts(框架) / modules(业务) / ui(界面) / settings(配置) / resources(资源·art+audio)。
+        // 各层 modulelist.xml + config.xml 在对应目录下，由递归扫描自动包含；不再需要 root 级附加。
+        private static readonly string[] ScanSubDirs = { "scripts", "modules", "settings", "resources", "ui" };
         private static readonly string[] ScanExtraFiles = { };
 
         // ====================================================================
@@ -55,13 +57,14 @@ namespace HeroDefense.EditorTools
         }
 
         /// <summary>
-        /// 扫描 gameRoot 下的 lua/ config/ art/ 以及 modulelist_*.txt，
+        /// 扫描 gameRoot 下的 scripts/ modules/ ui/ settings/ resources/ 以及各层 modulelist.xml，
         /// 对每个文件计算 MD5 + size，写入 gameRoot/manifest.json。返回收录文件数量。
         /// </summary>
         public static int RegenerateManifest(string gameRoot)
         {
             gameRoot = Path.GetFullPath(gameRoot);
             var entries = new List<ManifestEntry>();
+            var scopeExcluded = BuildScopeExclusions(gameRoot);   // 作用域过滤集（五层重组 v3）
 
             foreach (var sub in ScanSubDirs)
             {
@@ -78,6 +81,7 @@ namespace HeroDefense.EditorTools
 
                     string rel = MakeRelative(gameRoot, file);
                     if (string.IsNullOrEmpty(rel)) continue;
+                    if (scopeExcluded.Contains(rel)) continue;   // 非 ActiveScope 的脚本不打进包（五层重组 v3）
                     entries.Add(BuildEntry(file, rel));
                 }
             }
@@ -99,6 +103,46 @@ namespace HeroDefense.EditorTools
             string manifestPath = Path.Combine(gameRoot, "manifest.json");
             File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
             return entries.Count;
+        }
+
+        /// <summary>
+        /// 五层重组 v3：扫 ScanSubDirs 下所有 config.xml，收集"仅属非 ActiveScope 作用域"的 Script File →
+        /// 这些脚本在当前作用域打包时排除出 manifest（不上 CDN / 不进包）。同时出现在 ActiveScope 段的共享脚本不排除。
+        /// 当前仅 GameClient（scripts/config.xml 全列 GameClient）→ 排除集为空 → 行为同旧（全收）。
+        /// </summary>
+        private static HashSet<string> BuildScopeExclusions(string gameRoot)
+        {
+            var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var active = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var sub in ScanSubDirs)
+            {
+                string subFull = Path.Combine(gameRoot, sub);
+                if (!Directory.Exists(subFull)) continue;
+                foreach (var cfg in Directory.GetFiles(subFull, "config.xml", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        var doc = XDocument.Load(cfg);
+                        if (doc.Root == null) continue;
+                        foreach (var scopeElem in doc.Root.Elements())
+                        {
+                            bool isActive = string.Equals(scopeElem.Name.LocalName, LuaHost.ActiveScope, StringComparison.OrdinalIgnoreCase);
+                            foreach (var s in scopeElem.Elements("Script"))
+                            {
+                                var file = s.Attribute("File")?.Value;
+                                if (string.IsNullOrEmpty(file)) continue;
+                                file = file.Trim().Replace('\\', '/');
+                                if (isActive) active.Add(file); else excluded.Add(file);
+                            }
+                        }
+                    }
+                    catch (Exception e) { Debug.LogWarning($"[Manifest] config.xml 解析失败({cfg}): {e.Message}"); }
+                }
+            }
+            excluded.ExceptWith(active);   // 共享脚本（也在 active 段）不排除
+            if (excluded.Count > 0)
+                Debug.Log($"[Manifest] 作用域过滤：ActiveScope={LuaHost.ActiveScope}，排除 {excluded.Count} 个非本作用域脚本");
+            return excluded;
         }
 
         private static ManifestEntry BuildEntry(string fullPath, string relPath)
@@ -200,7 +244,7 @@ namespace HeroDefense.EditorTools
             //   <repo>/Build/Wechat/      ← 微信小游戏（读 CDN）
             //   <repo>/Build/ByteGame/    ← 抖音小游戏（读 CDN）
             //   <repo>/Game/              ← 资源库（所有版本共享）
-            // PC 运行时 ResourceHost.Boot 从 exe 目录向上 2 级找到 <repo>/Game/config/Enum.tab → _baseDir=<repo>/Game。
+            // PC 运行时 ResourceHost.Boot 从 exe 目录向上 2 级找到 <repo>/Game/settings/Enum.tab → _baseDir=<repo>/Game。
             // 测试 / 美术改 <repo>/Game/* 直接影响下一次启动，无需重打包。
             string outDir = Path.Combine(repoRoot, "Build", "Windows");
             string outExe = Path.Combine(outDir, "HeroDefense.exe");
@@ -451,9 +495,9 @@ namespace HeroDefense.EditorTools
                 "\r\n" +
                 "## 修改资源 / 配置（改 Game/ 直接生效）\r\n" +
                 "\r\n" +
-                "  - 配置表  ：Game/config/*.tab（Tab 分隔，4 行表头）\r\n" +
-                "  - Lua 脚本：Game/lua/**/*.lua\r\n" +
-                "  - 美术资源：Game/art/**/*.png 或 .jpg\r\n" +
+                "  - 配置表  ：Game/settings/*.tab（Tab 分隔，4 行表头）\r\n" +
+                "  - Lua 脚本：Game/scripts|modules|ui/**/*.lua\r\n" +
+                "  - 美术资源：Game/resources/art/**/*.png 或 .jpg\r\n" +
                 "\r\n" +
                 "改完流程：\r\n" +
                 "  1. 关闭游戏窗口（PowerShell 日志窗可一并关）\r\n" +
@@ -461,13 +505,13 @@ namespace HeroDefense.EditorTools
                 "  3. 改动即时生效\r\n" +
                 "\r\n" +
                 "⚠️ 共享盘上的 Game/ 是团队同源，美术 / 测试改动**所有人立即受影响**。\r\n" +
-                "   重要文件改动前请协调（特别是 config/*.tab 数值平衡 / level.tab 关卡配置）。\r\n" +
+                "   重要文件改动前请协调（特别是 settings/*.tab 数值平衡 / level.tab 关卡配置）。\r\n" +
                 "\r\n" +
                 "## 已知限制 / 注意事项\r\n" +
                 "\r\n" +
                 "  - 这是 Development Build，体积较大、启动稍慢，但保留完整日志栈\r\n" +
                 "  - 修改 Lua 不触发热重载，必须关闭游戏重启\r\n" +
-                "  - art/*.png 或 .jpg 替换 / 修改无需 manifest 更新即生效（运行时直接 file IO）\r\n" +
+                "  - resources/art/*.png 或 .jpg 替换 / 修改无需 manifest 更新即生效（运行时直接 file IO）\r\n" +
                 "  - 新增 / 删除文件后需重生 manifest.json，请联系开发跑 Tools/HeroDefense/Regenerate Manifest\r\n" +
                 "  - 首次从共享盘运行 exe，Windows SmartScreen 可能弹「保护了你的电脑」\r\n" +
                 "    → 点「更多信息 → 仍要运行」即可（一次过白名单后下次自动允许）\r\n" +
@@ -477,10 +521,10 @@ namespace HeroDefense.EditorTools
                 "\r\n" +
                 "  Q: 启动后黑屏 / 没日志窗\r\n" +
                 "  A: 看 PowerShell 窗口（或 %TEMP%\\HeroDefense_output.log）有无 [ResourceHost] 报错；\r\n" +
-                "     若提示「未找到 (Game/)config/Enum.tab」说明共享盘上 Game/ 目录路径错位或未同步，\r\n" +
-                "     检查 ../../Game/config/Enum.tab（相对 exe）能不能访问。\r\n" +
+                "     若提示「未找到 (Game/)settings/Enum.tab」说明共享盘上 Game/ 目录路径错位或未同步，\r\n" +
+                "     检查 ../../Game/settings/Enum.tab（相对 exe）能不能访问。\r\n" +
                 "\r\n" +
-                "  Q: 改了 art/*.png 但没生效\r\n" +
+                "  Q: 改了 resources/art/*.png 但没生效\r\n" +
                 "  A: 关闭游戏完全重启。运行中改图不会热重载。\r\n" +
                 "\r\n" +
                 "  Q: 我的电脑没装 Unity 能跑吗？\r\n" +
@@ -565,7 +609,7 @@ namespace HeroDefense.EditorTools
             }
 
             var r1 = LuaHost.DoString(
-                "local s = Resource_LoadSprite('art/nonexistent.png') " +
+                "local s = Resource_LoadSprite('resources/art/nonexistent.png') " +
                 "return tostring(type(s)) .. '|' .. tostring(s)");
             string r1Str = r1 != null && r1.Length > 0 ? r1[0]?.ToString() : "<nil>";
             Debug.Log($"[HeroDefenseBuildTools] Self-Check 结果（不存在路径）: {r1Str}");
@@ -728,7 +772,7 @@ namespace HeroDefense.EditorTools
         ///   - ≤ 4 MB: 跨平台安全（微信 + 抖音 + 弱网都 OK）
         ///   - 4-10 MB: 警告（弱网偶发超时）
         ///   - > 10 MB: 严重（应拆 atlas / 压缩 / 走子图）
-        /// 扫描范围与 RegenerateManifest 一致：lua/ config/ art/ 三个子目录
+        /// 扫描范围与 RegenerateManifest 一致：scripts/ modules/ ui/ settings/ resources/ 子目录
         /// </summary>
         private static void ScanCdnResources()
         {
@@ -746,7 +790,7 @@ namespace HeroDefense.EditorTools
             const long FOUR_MB = 4L * ONE_MB;
             const long TEN_MB = 10L * ONE_MB;
 
-            string[] subDirs = { "lua", "config", "art" };
+            string[] subDirs = { "scripts", "modules", "ui", "settings", "resources" };
             long totalSize = 0;
             int totalFiles = 0;
             var bigFiles = new List<(string rel, long size)>();

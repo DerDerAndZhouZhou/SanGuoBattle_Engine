@@ -28,8 +28,14 @@ namespace HeroDefense.UI
         Text _titleText, _hpText, _descText, _btnText;
         Button _upgradeBtn, _closeBtn;
 
+        // ⚠ 已迁移到热更 UI：营帐详情现由 Game/ui/wnd_camp_detail.xml + lua/ui/wnd_camp_detail.lua 实现
+        //   （CampVisualController 点击改调 Lua CampDetail_Open）。本控制器置惰性，场景 CampDetailPanel 保持 inactive，
+        //   验证通过后将彻底移除组件 + 删脚本 + 清场景节点。
+        static readonly bool MIGRATED_TO_XML = true;
+
         void OnEnable()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：营帐详情已迁热更 UI（见上）
             ResolveChildren();
             Refresh();
         }

@@ -38,8 +38,14 @@ namespace HeroDefense.UI
         bool _isShown;
         int _lastChoicesHash;
 
+        // ⚠ 已迁移到热更 UI：升级三选一现由 Game/ui/wnd_reward_choose.xml + lua/ui/wnd_reward_choose.lua 实现
+        //   （wnd_reward_choose.lua 轮询 Rogue_State.current_choices 渲染，选项→Rogue_PickChoice）。本控制器置惰性，
+        //   场景 RewardChoosePanel 保持 inactive，验证通过后将彻底移除组件 + 删脚本 + 清场景节点。
+        static readonly bool MIGRATED_TO_XML = true;
+
         void OnEnable()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：升级三选一已迁热更 UI（见上）
             // this 挂在 BattleHud 上；查找子节点 RewardChoosePanel
             _panel = transform.Find("RewardChoosePanel")?.gameObject;
             ResolveChildren();
@@ -49,6 +55,7 @@ namespace HeroDefense.UI
 
         void Update()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：渲染改由 wnd_reward_choose.lua 轮询驱动
             _pollAccum += Time.unscaledDeltaTime;
             if (_pollAccum < POLL_INTERVAL) return;
             _pollAccum = 0;

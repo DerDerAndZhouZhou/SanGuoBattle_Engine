@@ -40,8 +40,9 @@ namespace HeroDefense.Core
             {
                 var root = GameObject.Find("RootWindow");
                 if (root == null) return;
+                // 已迁热更 UI：抑制旧 MainWindow（保持 inactive）；新 XML 主菜单由 UIManager.ShowMainWindow→MainMenu_Open 显示
                 var mw = root.transform.Find("MainWindow");
-                if (mw != null && !mw.gameObject.activeSelf) mw.gameObject.SetActive(true);
+                if (mw != null && mw.gameObject.activeSelf) mw.gameObject.SetActive(false);
                 var hud = root.transform.Find("BattleHud");
                 if (hud != null && hud.gameObject.activeSelf) hud.gameObject.SetActive(false);
             }
@@ -130,11 +131,11 @@ namespace HeroDefense.Core
                 if (string.IsNullOrEmpty(key)) return;
 
                 // .png 优先，缺失回落 .jpg
-                var sprite = ResourceHost.LoadSprite($"art/bg/{key}.png", logMissing: false)
-                          ?? ResourceHost.LoadSprite($"art/bg/{key}.jpg", logMissing: false);
+                var sprite = ResourceHost.LoadSprite($"resources/art/bg/{key}.png", logMissing: false)
+                          ?? ResourceHost.LoadSprite($"resources/art/bg/{key}.jpg", logMissing: false);
                 if (sprite == null)
                 {
-                    Debug.LogWarning($"[MainSceneController] 主菜单背景缺失 (.png/.jpg 都没有): art/bg/{key}");
+                    Debug.LogWarning($"[MainSceneController] 主菜单背景缺失 (.png/.jpg 都没有): resources/art/bg/{key}");
                     return;
                 }
 
@@ -158,7 +159,7 @@ namespace HeroDefense.Core
                 SceneManager.MoveGameObjectToScene(bg, gameObject.scene);
 
                 FitBackgroundToCamera(bg, sprite);
-                Debug.Log($"[MainSceneController] 主菜单背景 ← art/bg/{key} ({sprite.texture.width}x{sprite.texture.height}) scene={gameObject.scene.name}");
+                Debug.Log($"[MainSceneController] 主菜单背景 ← resources/art/bg/{key} ({sprite.texture.width}x{sprite.texture.height}) scene={gameObject.scene.name}");
             }
             catch (System.Exception e)
             {

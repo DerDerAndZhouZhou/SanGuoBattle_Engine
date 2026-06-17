@@ -1,5 +1,7 @@
 {
   "dependencies": {
+    "com.herodefense.uixml": "file:../Assets/../LocalPackages/com.herodefense.uixml",
+    "com.herodefense.core": "file:../Assets/../LocalPackages/com.herodefense.core",
     "com.bytedance.starksdk": "file:../Assets/../LocalPackages/com.bytedance.starksdk@6.7.4",
     "com.coplaydev.unity-mcp": "https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity#main",
     "com.qq.weixin.minigame": "https://gitee.com/wechat-minigame/minigame-tuanjie-transform-sdk.git",

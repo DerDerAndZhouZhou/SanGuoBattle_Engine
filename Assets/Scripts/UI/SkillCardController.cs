@@ -32,8 +32,14 @@ namespace HeroDefense.UI
 
         readonly List<int> _curBuffIds = new List<int>();
 
+        // ⚠ 已迁移到热更 UI：增益列表现由 Game/ui/wnd_skill_card.xml + lua/ui/wnd_skill_card.lua 实现
+        //   （HUD buff 按钮 onClick 转调 Lua SkillCardWnd_Toggle）。本控制器置惰性、不再程序化构建 modal，
+        //   验证通过后将彻底移除本组件 + 删脚本（迁移收尾步）。
+        static readonly bool MIGRATED_TO_XML = true;
+
         void OnEnable()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI
             EnsureModal();
             _lastHash = "";
         }
@@ -49,6 +55,7 @@ namespace HeroDefense.UI
 
         public void Toggle()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI（HUD 改调 Lua SkillCardWnd_Toggle）
             EnsureModal();
             if (_modalRoot == null) return;
             bool show = !_modalRoot.activeSelf;

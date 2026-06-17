@@ -14,7 +14,7 @@ namespace HeroDefense.Battle
     /// 定位/缩放：从 GridMap.CellToWorld 取该列 row1↔rowN 世界坐标算中心 + 高度，把 sprite 拉伸成
     ///   "1 列宽 × N 行高" 的城墙（等 GridMap.Cells 就绪后惰性执行一次，sprite 切换时重算缩放）。
     ///
-    /// 0 [SerializeField]：sprite 运行时从 art/camp/ 按文件名加载；位置/缩放由网格坐标算（不读场景摆位）。
+    /// 0 [SerializeField]：sprite 运行时从 resources/art/camp/ 按文件名加载；位置/缩放由网格坐标算（不读场景摆位）。
     /// </summary>
     public class CampVisualController : MonoBehaviour
     {
@@ -33,10 +33,10 @@ namespace HeroDefense.Battle
         void Awake()
         {
             _sr = GetComponent<SpriteRenderer>();
-            _spriteFull = ResourceHost.LoadSprite("art/camp/camp_full_hp.png");
-            _spriteMid = ResourceHost.LoadSprite("art/camp/camp_mid_hp.png");
-            _spriteLow = ResourceHost.LoadSprite("art/camp/camp_low_hp.png");
-            _spriteDestroyed = ResourceHost.LoadSprite("art/camp/camp_destroyed.png");
+            _spriteFull = ResourceHost.LoadSprite("resources/art/camp/camp_full_hp.png");
+            _spriteMid = ResourceHost.LoadSprite("resources/art/camp/camp_mid_hp.png");
+            _spriteLow = ResourceHost.LoadSprite("resources/art/camp/camp_low_hp.png");
+            _spriteDestroyed = ResourceHost.LoadSprite("resources/art/camp/camp_destroyed.png");
 
             // 进局左基地一定满血 → 立即应用 full（避免首帧闪默认占位）
             if (_sr != null && _spriteFull != null)
@@ -67,20 +67,10 @@ namespace HeroDefense.Battle
 
         void OnMouseUpAsButton()
         {
-            try
-            {
-                var panel = GameObject.FindGameObjectWithTag("Panel_CampDetail");
-                if (panel == null)
-                {
-                    Debug.LogWarning("[CampVisualController] Panel_CampDetail 未找到（UIWindow 未加载或 Tag 未绑定）");
-                    return;
-                }
-                panel.SetActive(true);
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogWarning($"[CampVisualController] open CampDetail 失败: {e.Message}");
-            }
+            // 已迁热更 UI：点击基地 → 调 Lua CampDetail_Open（wnd_camp_detail.lua 懒加载+刷新+显示），
+            // 不再激活场景 Panel_CampDetail（该节点由 CampDetailController 惰性后保持 inactive）。
+            try { HeroDefense.Engine.Host.LuaHost.CallGlobal("CampDetail_Open"); }
+            catch (System.Exception e) { Debug.LogWarning($"[CampVisualController] open CampDetail 失败: {e.Message}"); }
         }
 
         void Update()

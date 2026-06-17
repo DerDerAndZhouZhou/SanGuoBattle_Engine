@@ -41,11 +41,16 @@ namespace HeroDefense.UI
         const float POLL_INTERVAL = 0.3f;
         string _lastHash = "";
 
-        void OnEnable() { EnsureUI(); }
+        // ⚠ 已迁热更 UI：商场现由 wnd_shop.xml/.lua 实现（顶部带 8 卡 + SideBar 商店开关 Shop_Toggle + 买/刷新/toast）。
+        //   旧 BattleHud GO 始终抑制，本控制器惰性；验证后删组件+脚本+场景节点。
+        static readonly bool MIGRATED_TO_XML = true;
+
+        void OnEnable() { if (MIGRATED_TO_XML) return; EnsureUI(); }
 
         // SideBar Btn_shop 调：toggle 顶部商场带显隐（v6 常显基础上加开关）
         public void Toggle()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI
             if (!_built) EnsureUI();
             if (_shopPanel != null)
             {
@@ -57,6 +62,7 @@ namespace HeroDefense.UI
 
         void Update()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：已迁热更 UI
             _poll += Time.unscaledDeltaTime;
             if (_poll >= POLL_INTERVAL)
             {
@@ -320,7 +326,7 @@ namespace HeroDefense.UI
                 irt.anchorMin = new Vector2(0f, 0f); irt.anchorMax = new Vector2(1f, 1f);
                 irt.offsetMin = new Vector2(6f, 30f); irt.offsetMax = new Vector2(-6f, -24f);
                 var img = imgGo.GetComponent<Image>(); img.raycastTarget = false;
-                Sprite sp = !string.IsNullOrEmpty(spriteKey) ? ResourceHost.LoadSprite("art/" + spriteKey + "_idle_0.png") : null;
+                Sprite sp = !string.IsNullOrEmpty(spriteKey) ? ResourceHost.LoadSprite("resources/art/" + spriteKey + "_idle_0.png") : null;
                 if (sp != null) img.sprite = sp; else img.color = new Color(0.3f, 0.3f, 0.3f, 0.6f);
 
                 AddTopName(slot.transform, nameCn);

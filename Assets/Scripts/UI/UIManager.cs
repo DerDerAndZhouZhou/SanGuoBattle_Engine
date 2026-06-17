@@ -157,13 +157,16 @@ namespace HeroDefense.UI
         {
             EnsureWindowsResolved();
             if (rootWindow != null && !rootWindow.activeSelf) rootWindow.SetActive(true);
-            if (mainWindow != null) mainWindow.SetActive(true);
+            // 已迁热更 UI：抑制旧场景 MainWindow，改显新 XML 主菜单（Game/lua/ui/wnd_main_menu.lua）
+            if (mainWindow != null) mainWindow.SetActive(false);
+            HeroDefense.Engine.Host.LuaHost.CallGlobal("MainMenu_Open");
         }
 
         public void HideAll()
         {
             EnsureWindowsResolved();
             if (mainWindow != null) mainWindow.SetActive(false);
+            HeroDefense.Engine.Host.LuaHost.CallGlobal("MainMenu_Close");   // 同步隐新 XML 主菜单
         }
 
         void EnsureWindowsResolved()

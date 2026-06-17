@@ -16,6 +16,18 @@
       },
       "hash": "73eb27aeccfa8e0676eaf3304136e9b85953d913"
     },
+    "com.herodefense.core": {
+      "version": "file:../Assets/../LocalPackages/com.herodefense.core",
+      "depth": 0,
+      "source": "local",
+      "dependencies": {}
+    },
+    "com.herodefense.uixml": {
+      "version": "file:../Assets/../LocalPackages/com.herodefense.uixml",
+      "depth": 0,
+      "source": "local",
+      "dependencies": {}
+    },
     "com.qq.weixin.minigame": {
       "version": "https://gitee.com/wechat-minigame/minigame-tuanjie-transform-sdk.git",
       "depth": 0,

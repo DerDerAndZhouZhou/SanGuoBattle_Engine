@@ -7,7 +7,7 @@ namespace HeroDefense.Config
 {
     /// <summary>
     /// 配置表管理器 — 单例
-    /// 自动加载 Game/config/ 下所有 .tab 配置文件（经 ResourceHost 抽象层）。
+    /// 自动加载 Game/settings/ 下所有 .tab 配置文件（经 ResourceHost 抽象层）。
     ///
     /// 数据结构:
     ///   _tables["tower"] = [
@@ -39,14 +39,14 @@ namespace HeroDefense.Config
             Load();
         }
 
-        /// <summary>加载 Game/config/ 下所有 .tab 文件（通过 ResourceHost 抽象层）。</summary>
+        /// <summary>加载 Game/settings/ 下所有 .tab 文件（通过 ResourceHost 抽象层）。</summary>
         public void Load()
         {
             _tables.Clear();
 
             EnumRegistry.Load();
 
-            var files = ResourceHost.EnumerateFiles("config", "*.tab");
+            var files = ResourceHost.EnumerateFiles("settings", "*.tab");
             foreach (var rel in files)
             {
                 string fileName = Path.GetFileNameWithoutExtension(rel);
@@ -70,7 +70,7 @@ namespace HeroDefense.Config
 
         public void Reload(string tableName)
         {
-            var text = ResourceHost.ReadText($"config/{tableName}.tab");
+            var text = ResourceHost.ReadText($"settings/{tableName}.tab");
             if (string.IsNullOrEmpty(text))
             {
                 Debug.LogWarning($"[ConfigManager] Reload: {tableName}.tab 未找到");

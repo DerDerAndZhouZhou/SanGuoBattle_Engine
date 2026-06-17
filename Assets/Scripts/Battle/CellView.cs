@@ -27,9 +27,9 @@ namespace HeroDefense.Battle
 
         SpriteRenderer _sr;
 
-        // v4 2026-05-14：cell 默认 sprite 在 Game/art/ui/hud/cell_unlocked.png（CDN 热更目录），
+        // v4 2026-05-14：cell 默认 sprite 在 Game/resources/art/ui/hud/cell_unlocked.png（CDN 热更目录），
         // 2026-05-20 路径随 UI 子目录重组迁入 hud/。
-        const string DefaultCellSpritePath = "art/ui/hud/cell_unlocked.png";
+        const string DefaultCellSpritePath = "resources/art/ui/hud/cell_unlocked.png";
         static Sprite _defaultSpriteCache;
 
         void Awake()

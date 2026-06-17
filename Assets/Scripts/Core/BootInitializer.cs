@@ -21,7 +21,7 @@ namespace HeroDefense.Core
         // CDN 根 URL。默认 = cloudflared 隧道（真机/任何网络可达 + HTTPS，DevTools 也走它，互不冲突）。
         // ⚠ 2026-06-07：这是 cloudflared **quick tunnel** 临时地址，cloudflared 一重启地址就变 →
         //    变了就改这一行重新出包。要长期稳定地址用 named tunnel（需 CF 账号+域名）或静态托管。
-        // 编辑器/PC 本地有 Game/ → Exists("config/Enum.tab")=true 跳过下载，不受此默认值影响。
+        // 编辑器/PC 本地有 Game/ → Exists("settings/Enum.tab")=true 跳过下载，不受此默认值影响。
         // PlayerPrefs "cdn_base_url" 可覆盖（但小游戏沙箱 IndexedDB 不可用 → PlayerPrefs 不持久，真机改地址只能改这里）。
         private static string GetCdnBaseUrl()
         {
@@ -41,7 +41,7 @@ namespace HeroDefense.Core
         {
             // ===== Step 0: 资源底层 + CDN 下载（最先，后续一切都依赖资源就位）=====
             HeroDefense.Engine.Host.ResourceHost.Boot();
-            if (!HeroDefense.Engine.Host.ResourceHost.Exists("config/Enum.tab"))
+            if (!HeroDefense.Engine.Host.ResourceHost.Exists("settings/Enum.tab"))
             {
                 string cdn = GetCdnBaseUrl();
                 Debug.Log("[BootInitializer] Step 0: 本地无资源 → CDN 下载: " + cdn);

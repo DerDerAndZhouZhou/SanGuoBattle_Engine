@@ -1,0 +1,8 @@
+{
+  "name": "com.herodefense.core",
+  "version": "0.1.0",
+  "displayName": "HeroDefense Core",
+  "description": "共享引擎底层（资源读取层 ResourceHost：定位 Game/、读文件、枚举、加载贴图含 atlas）。host/平台无关、自包含，被游戏引擎(HeroDefenseEngine)与编辑器引擎(uieditorengine)双方引用 → 单一真相源、零漂移。",
+  "unity": "2022.3",
+  "author": { "name": "HeroDefense" }
+}

@@ -40,8 +40,14 @@ namespace HeroDefense.UI
         // dirty 检测：当前已渲染的 target 标识（kind|id|handle）
         string _lastKey = "";
 
+        // ⚠ 已迁移到热更 UI：单位详情面板现由 Game/ui/wnd_unit_detail.xml + Game/lua/ui/wnd_unit_detail.lua 实现
+        //   （unit_inspect.lua 在检视目标变化时 Emit "InspectTargetChanged"，wnd_unit_detail.lua 监听渲染）。
+        //   本 C# 控制器置惰性、不再程序化构建详情面板，验证通过后将彻底移除本组件 + 删脚本（迁移收尾步）。
+        static readonly bool MIGRATED_TO_XML = true;
+
         void OnEnable()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：详情面板已迁热更 UI（见上）
             EnsurePanel();
             _lastKey = "";
             TrySyncFromLua();
@@ -49,6 +55,7 @@ namespace HeroDefense.UI
 
         void Update()
         {
+            if (MIGRATED_TO_XML) return;   // 惰性：渲染改由 wnd_unit_detail.lua 事件驱动
             _pollAccum += Time.unscaledDeltaTime;
             if (_pollAccum < POLL_INTERVAL) return;
             _pollAccum = 0;
@@ -241,9 +248,9 @@ namespace HeroDefense.UI
                     Sprite sprite = null;
                     if (!string.IsNullOrEmpty(spriteKey))
                     {
-                        sprite = ResourceHost.LoadSprite($"art/{spriteKey}_idle_0.png")
-                              ?? ResourceHost.LoadSprite($"art/{spriteKey}_walk_0.png")
-                              ?? ResourceHost.LoadSprite($"art/{spriteKey}.png");
+                        sprite = ResourceHost.LoadSprite($"resources/art/{spriteKey}_idle_0.png")
+                              ?? ResourceHost.LoadSprite($"resources/art/{spriteKey}_walk_0.png")
+                              ?? ResourceHost.LoadSprite($"resources/art/{spriteKey}.png");
                     }
                     _portrait.sprite = sprite;
                     _portrait.enabled = (sprite != null);
