@@ -52,6 +52,13 @@ namespace HeroDefense.UI.Xml
     {
         readonly IUIXmlHost _host;
 
+        /// <summary>
+        /// 可选回链回调（编辑器用·向后兼容）：每构建一个控件 GameObject 后触发 (elem, go)。
+        /// 游戏端不设（保持 null）→ 现有渲染逻辑零影响；编辑器端用它建 XElement↔GameObject 双向映射做画布直接操作。
+        /// 注意：InheritFrom 节点的 elem 是 MergeTemplate 后的克隆，非原树节点（编辑器据此禁用其画布写回，见架构 §8）。
+        /// </summary>
+        public System.Action<XElement, GameObject> OnControlBuilt;
+
         // 保留标签：不当作控件构建（OnLoad 等在 <Scripts> 内，BHQSL 风格的 <Anchors>/<Size> 子块为未来预留）
         static readonly HashSet<string> _reservedTags = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase)
         {
@@ -327,6 +334,7 @@ namespace HeroDefense.UI.Xml
                 BuildControl(child, childParent);
             }
 
+            OnControlBuilt?.Invoke(elem, go);   // 编辑器回链（游戏端为 null·不影响）
             return go;
         }
 
