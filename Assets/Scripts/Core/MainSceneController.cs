@@ -40,11 +40,8 @@ namespace HeroDefense.Core
             {
                 var root = GameObject.Find("RootWindow");
                 if (root == null) return;
-                // 已迁热更 UI：抑制旧 MainWindow（保持 inactive）；新 XML 主菜单由 UIManager.ShowMainWindow→MainMenu_Open 显示
-                var mw = root.transform.Find("MainWindow");
-                if (mw != null && mw.gameObject.activeSelf) mw.gameObject.SetActive(false);
-                var hud = root.transform.Find("BattleHud");
-                if (hud != null && hud.gameObject.activeSelf) hud.gameObject.SetActive(false);
+                // 旧 MainWindow / BattleHud 场景节点已于迁移收尾删除；主菜单为热更 XML
+                // （UIManager.ShowMainWindow→MainMenu_Open 显示），此处无需再抑制旧节点。
             }
             catch (System.Exception e)
             {

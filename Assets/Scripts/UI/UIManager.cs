@@ -13,11 +13,10 @@ namespace HeroDefense.UI
     public class UIManager : SingletonMono<UIManager>
     {
         const string TAG_ROOT_WINDOW = "Panel_RootWindow";
-        const string TAG_MAIN_WINDOW = "Panel_MainWindow";
+        // 旧场景 MainWindow 节点已于迁移收尾删除（主菜单为热更 XML wnd_main_menu）→ 不再按 Tag 查找
 
         Transform _panelRoot;
         GameObject rootWindow;
-        GameObject mainWindow;
 
         private Dictionary<string, GameObject> _panels = new Dictionary<string, GameObject>();
         private Dictionary<string, UIBinder> _binders = new Dictionary<string, UIBinder>();
@@ -39,7 +38,6 @@ namespace HeroDefense.UI
         void ResolveWindows()
         {
             rootWindow = UIFinder.FindPanelByTag(TAG_ROOT_WINDOW);
-            mainWindow = UIFinder.FindPanelByTag(TAG_MAIN_WINDOW);
         }
 
         private void ScanPanels()
@@ -157,22 +155,19 @@ namespace HeroDefense.UI
         {
             EnsureWindowsResolved();
             if (rootWindow != null && !rootWindow.activeSelf) rootWindow.SetActive(true);
-            // 已迁热更 UI：抑制旧场景 MainWindow，改显新 XML 主菜单（Game/lua/ui/wnd_main_menu.lua）
-            if (mainWindow != null) mainWindow.SetActive(false);
+            // 主菜单为热更 XML（Game/ui/main_menu/wnd_main_menu）；旧场景 MainWindow 节点已删除
             HeroDefense.Engine.Host.LuaHost.CallGlobal("MainMenu_Open");
         }
 
         public void HideAll()
         {
             EnsureWindowsResolved();
-            if (mainWindow != null) mainWindow.SetActive(false);
             HeroDefense.Engine.Host.LuaHost.CallGlobal("MainMenu_Close");   // 同步隐新 XML 主菜单
         }
 
         void EnsureWindowsResolved()
         {
             if (rootWindow == null) rootWindow = UIFinder.FindPanelByTag(TAG_ROOT_WINDOW);
-            if (mainWindow == null) mainWindow = UIFinder.FindPanelByTag(TAG_MAIN_WINDOW);
         }
     }
 }

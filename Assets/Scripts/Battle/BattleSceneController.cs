@@ -65,11 +65,7 @@ namespace HeroDefense.Battle
             {
                 var root = GameObject.Find("RootWindow");
                 if (root == null) { Debug.LogWarning("[BSC] RootWindow 未找到"); return; }
-                // 已迁热更 UI：旧 MainWindow + 旧 BattleHud 均始终抑制；新 XML 主菜单/HUD/库存/商场经 *_Open/Close 显隐
-                var mw = root.transform.Find("MainWindow");
-                if (mw != null) mw.gameObject.SetActive(false);
-                var hud = root.transform.Find("BattleHud");
-                if (hud != null) hud.gameObject.SetActive(false);
+                // 已迁热更 UI：旧 MainWindow / BattleHud 场景节点已于迁移收尾删除；主菜单/HUD/库存/商场全经 XML *_Open/Close 显隐
                 HeroDefense.Engine.Host.LuaHost.CallGlobal(show ? "MainMenu_Open" : "MainMenu_Close");
                 HeroDefense.Engine.Host.LuaHost.CallGlobal(show ? "BattleHud_Close" : "BattleHud_Open");
             }
