@@ -12,7 +12,7 @@ namespace HeroDefense.SDK
     ///   - placement：广告位字符串（ad_revive / ad_double_reward），当前 AdManager 不分位，仅记日志。
     ///   - onReward：Lua function，看完广告获得奖励时回调。
     ///
-    /// 回调形态用 LuaFunction（非 Action）规避 xLua delegate 生成配置坑（CLAUDE.md §6 / §10 / 技术方案 R2）。
+    /// 回调形态用 LuaFunction（非 Action）规避 xLua delegate 生成配置坑（AGENTS.md §6 / §10 / 技术方案 R2）。
     ///
     /// 编辑器 / 无真广告 SDK 环境兜底：AdManager.ShowRewardedAd 在非 DOUYIN_MINIGAME 分支
     /// 已直接 callback(true)，故编辑器下 Ad_Show 天然走成功回调，结算页广告功能可测。
@@ -58,3 +58,4 @@ namespace HeroDefense.SDK
 #endif
     }
 }
+

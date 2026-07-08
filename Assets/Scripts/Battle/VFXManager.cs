@@ -9,7 +9,7 @@ namespace HeroDefense.Battle
     /// <summary>
     /// VFX 管理器（单例 MonoBehaviour）。
     ///
-    /// 表现层底层服务（CLAUDE.md §1.1）：
+    /// 表现层底层服务（AGENTS.md §1.1）：
     ///   - 仅 Play(vfxKey, x, y, duration) / PlayOnUnit(handle, vfxKey)
     ///   - 业务 Lua 决定"何时播什么 vfx"
     ///
@@ -120,7 +120,7 @@ namespace HeroDefense.Battle
                 return 0;
             }
 
-            var (prefabKey, duration, loop, sortLayer) = LookupVFX(vfxKey);
+            var (prefabKey, duration, loop, _) = LookupVFX(vfxKey);
             float life = (durationOverride > 0f) ? durationOverride : duration;
             // duration=0 + loop=true 视为常驻（life=∞），需上层手动 Stop
             if (life <= 0f && !loop) life = 1f; // 防 0 寿命卡死
@@ -130,7 +130,8 @@ namespace HeroDefense.Battle
             if (go == null) return 0;
 
             var sr = ApplyFirstFrame(go, frames);
-            ConfigureSorting(go, sortLayer);
+            ApplyVfxScale(sr);
+            ConfigureSortingAtWorld(go, worldY);
             go.transform.SetParent(transform, false);
             go.transform.position = new Vector3(worldX, worldY, 0f);
             go.SetActive(true);
@@ -167,7 +168,7 @@ namespace HeroDefense.Battle
                 return;
             }
 
-            var (prefabKey, duration, loop, sortLayer) = LookupVFX(vfxKey);
+            var (prefabKey, duration, loop, _) = LookupVFX(vfxKey);
             float life = (durationOverride > 0f) ? durationOverride : duration;
             if (life <= 0f && !loop) life = 1f;
 
@@ -176,9 +177,10 @@ namespace HeroDefense.Battle
             if (go == null) return;
 
             var sr = ApplyFirstFrame(go, frames);
-            ConfigureSorting(go, sortLayer);
+            ConfigureSortingBelowTarget(go, unitGO);
             go.transform.SetParent(unitGO.transform, false);
-            go.transform.localPosition = Vector3.zero;
+            go.transform.localPosition = CalcTargetVfxLocalPosition(unitGO);
+            ApplyVfxScale(sr);
             go.SetActive(true);
 
             _active.Add(new ActiveVFX
@@ -251,14 +253,70 @@ namespace HeroDefense.Battle
             return go;
         }
 
-        // ============ 设置 sort_layer（如果 prefab 自带 SpriteRenderer） ============
-        private void ConfigureSorting(GameObject go, int sortLayer)
+        // ============ 设置 VFX sorting：统一压在对应单位主体图下方 ============
+        private void ConfigureSortingAtWorld(GameObject go, float worldY)
+        {
+            int row = GridMap.WorldToCellRow(worldY);
+            int order = GridSortingService.CalcSortingOrderForRow(row) - 1;
+            ConfigureSorting(go, HDSortingLayers.Tower, order);
+        }
+
+        private void ConfigureSortingBelowTarget(GameObject go, GameObject targetGO)
+        {
+            var targetSr = FindMainSpriteRenderer(targetGO);
+            if (targetSr != null)
+            {
+                ConfigureSorting(go, targetSr.sortingLayerName, targetSr.sortingOrder - 1);
+                return;
+            }
+
+            float y = targetGO != null ? targetGO.transform.position.y : 0f;
+            ConfigureSortingAtWorld(go, y);
+        }
+
+        private static SpriteRenderer FindMainSpriteRenderer(GameObject go)
+        {
+            if (go == null) return null;
+
+            var srs = go.GetComponentsInChildren<SpriteRenderer>(true);
+            SpriteRenderer fallback = null;
+            for (int i = 0; i < srs.Length; i++)
+            {
+                var sr = srs[i];
+                if (sr == null) continue;
+                if (sr.gameObject.name == "sprite_root") return sr;
+                if (fallback == null && sr.sprite != null) fallback = sr;
+            }
+            return fallback;
+        }
+
+        private static Vector3 CalcTargetVfxLocalPosition(GameObject targetGO)
+        {
+            var targetSr = FindMainSpriteRenderer(targetGO);
+            if (targetGO == null || targetSr == null || targetSr.sprite == null) return Vector3.zero;
+
+            var visible = BattleBridge.GetSpriteVisibleLocalRect(targetSr.sprite);
+            var centerWorld = targetSr.transform.TransformPoint(new Vector3(visible.center.x, visible.center.y, 0f));
+            var centerLocal = targetGO.transform.InverseTransformPoint(centerWorld);
+            return new Vector3(centerLocal.x, centerLocal.y, 0f);
+        }
+
+        private static void ApplyVfxScale(SpriteRenderer sr)
+        {
+            if (sr == null || sr.sprite == null) return;
+            var sz = sr.sprite.bounds.size;
+            if (sz.x <= 0f || sz.y <= 0f) return;
+            float s = UnitView.CalcScreenPixelEquivalentScale(sr.sprite, sz);
+            sr.transform.localScale = new Vector3(s, s, 1f);
+        }
+
+        private void ConfigureSorting(GameObject go, string layerName, int sortingOrder)
         {
             var srs = go.GetComponentsInChildren<SpriteRenderer>(true);
             for (int i = 0; i < srs.Length; i++)
             {
-                srs[i].sortingLayerName = HDSortingLayers.VFX;
-                srs[i].sortingOrder = sortLayer;
+                srs[i].sortingLayerName = layerName;
+                srs[i].sortingOrder = sortingOrder;
             }
         }
 

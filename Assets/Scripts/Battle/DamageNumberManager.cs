@@ -8,7 +8,7 @@ namespace HeroDefense.Battle
     /// <summary>
     /// 飘字管理器（单例 MonoBehaviour）。
     ///
-    /// 表现层底层服务（CLAUDE.md §1.1）：仅 Spawn(worldX, worldY, value, type)，
+    /// 表现层底层服务（AGENTS.md §1.1）：仅 Spawn(worldX, worldY, value, type)，
     /// 不判断"何时该 spawn"（业务由 Lua 调）。
     ///
     /// 设计要点：
@@ -309,3 +309,4 @@ namespace HeroDefense.Battle
         }
     }
 }
+

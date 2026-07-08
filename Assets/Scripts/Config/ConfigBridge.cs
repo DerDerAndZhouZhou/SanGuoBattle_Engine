@@ -177,7 +177,7 @@ namespace HeroDefense.Config
 
             var s = v.ToString();
             if (string.IsNullOrEmpty(s)) return null;
-            // json 列空对象哨兵 "{}"（CLAUDE.md §5 json 默认值约定）→ 视为「无数组数据」静默返回 null，
+            // json 列空对象哨兵 "{}"（AGENTS.md §5 json 默认值约定）→ 视为「无数组数据」静默返回 null，
             // 不当解析错误（GetFieldTable 面向数组形 json，"{}" 即等价于空数组的兜底默认）。
             var st = s.Trim();
             if (st == "{}" || st == "null") return null;
@@ -245,3 +245,4 @@ namespace HeroDefense.Config
         }
     }
 }
+

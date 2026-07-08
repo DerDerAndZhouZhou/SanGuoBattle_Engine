@@ -21,7 +21,7 @@ namespace HeroDefense.Battle
     /// 若 srcKind 为空 → 仍触发拖拽，但 srcId 为 0（Lua 业务自行处理）。
     ///
     /// 0 SerializeField。本组件挂在"可被拖拽"的 GO 上（卡片预制体 / 战场单位）。
-    /// 真鼠标 + 真触屏统一走 PointerEventData（CLAUDE.md hotfix-3：QA 不可只用 ExecuteEvents 自测）。
+    /// 真鼠标 + 真触屏统一走 PointerEventData（AGENTS.md hotfix-3：QA 不可只用 ExecuteEvents 自测）。
     /// </summary>
     public class DragInputBridge : MonoBehaviour,
         IPointerDownHandler,
@@ -162,3 +162,4 @@ namespace HeroDefense.Battle
         }
     }
 }
+

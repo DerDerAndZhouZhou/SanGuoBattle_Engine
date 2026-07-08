@@ -14,7 +14,7 @@
 //   - alpha 不变（避免闪白同时透明）
 //   - URP 2D Lit fallback 在 URP 项目 Tuanjie 1.8.4 下走 SpritesDefault 子集即可
 //
-// 兼容性（CLAUDE.md §10 / R-V14）：
+// 兼容性（AGENTS.md §10 / R-V14）：
 //   - 该 shader 使用 built-in 渲染管线语法 + URP 兼容子集
 //   - WebGL 1.0 / 2.0 都能编译（不用 SV_VertexID / multi_compile_instancing）
 //   - 若 Tuanjie 1.8.4 URP 2D 报错，回退方案：HitFeedback.CoFlash 改用 SpriteRenderer.color 双缓冲
@@ -130,3 +130,4 @@ Shader "HeroDefense/SpriteHitFlash"
 
     Fallback "Sprites/Default"
 }
+

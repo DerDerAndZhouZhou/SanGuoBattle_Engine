@@ -10,17 +10,27 @@ namespace HeroDefense.Battle
     ///   - 与 GridMap.CellToWorld 配套（row 越大 → worldY 越负）
     ///
     /// 性能：
-    ///   - lastY 缓存防抖（CLAUDE.md R-V11）：worldY 变化 &lt; 0.01 时跳过 set
+    ///   - lastY 缓存防抖（AGENTS.md R-V11）：worldY 变化 &lt; 0.01 时跳过 set
     ///   - 静态方法，无单例分配
     /// </summary>
     public static class GridSortingService
     {
         private const float MIN_DELTA = 0.01f;
+        private const int ROW_ORDER_STRIDE = 1000;
 
         /// <summary>worldY → sortingOrder（×100，便于亚像素精度）。</summary>
         public static int CalcSortingOrder(float worldY)
         {
             return Mathf.RoundToInt(-worldY * 100f);
+        }
+
+        /// <summary>
+        /// 逻辑行 → sortingOrder。row 越大越靠屏幕下方，必须压住 row 小的武将图。
+        /// 使用固定步长避免场景 cell 微调、sprite 画布高度或脚底锚点影响行间遮挡关系。
+        /// </summary>
+        public static int CalcSortingOrderForRow(int row)
+        {
+            return Mathf.Max(0, row) * ROW_ORDER_STRIDE;
         }
 
         /// <summary>

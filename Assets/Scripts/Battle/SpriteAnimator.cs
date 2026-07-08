@@ -6,7 +6,7 @@ namespace HeroDefense.Battle
     /// <summary>
     /// 逐帧 sprite 翻播（MVP 阶段：idle/walk/attack/death 3-4 帧/单位）。
     ///
-    /// 设计原则（CLAUDE.md §1）：
+    /// 设计原则（AGENTS.md §1）：
     ///   - 不是协程（避 GC）：用 LateUpdate 累计 dt 切帧
     ///   - 0 SerializeField：业务调 Play(state, frames, fps) 时传入帧数组
     ///   - 不写"何时切动作"的业务逻辑（仅播放帧），何时 idle / attack / death 由 Lua 决定

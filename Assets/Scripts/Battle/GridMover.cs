@@ -31,6 +31,7 @@ namespace HeroDefense.Battle
 
         private SpriteRenderer _sr;
         private float _lastSortY;
+        private int _lastSortRow;
 
         private const float WAYPOINT_REACH_DIST = 0.05f;
 
@@ -76,6 +77,7 @@ namespace HeroDefense.Battle
             _wpIndex = 0;
             _speed = speed > 0f ? speed : ConfigSpeed();
             _curDir = -1;
+            _lastSortRow = -1;
             Active = _waypoints.Count > 0;
             if (_sr == null) _sr = GetComponentInChildren<SpriteRenderer>();
             if (!Active) { NotifyArrived(); return; }   // 空路径 → 立即视为到达（调用方兜底）
@@ -100,7 +102,7 @@ namespace HeroDefense.Battle
             var nextPos = Vector2.MoveTowards(curPos, target, _speed * Time.deltaTime);
             transform.position = new Vector3(nextPos.x, nextPos.y, 0f);
 
-            if (_sr != null) GridSortingService.UpdateIfChanged(_sr, ref _lastSortY, nextPos.y);
+            UpdateSorting(nextPos);
 
             if (Vector2.Distance(nextPos, target) < WAYPOINT_REACH_DIST)
             {
@@ -142,6 +144,16 @@ namespace HeroDefense.Battle
             }
             catch { /* 段回调非致命,静默 */ }
 #endif
+        }
+
+        private void UpdateSorting(Vector2 pos)
+        {
+            if (_sr == null) return;
+            var cell = GridMap.WorldToCell(pos);
+            if (cell.row == _lastSortRow && Mathf.Abs(pos.y - _lastSortY) < 0.01f) return;
+            _sr.sortingOrder = GridSortingService.CalcSortingOrderForRow(cell.row);
+            _lastSortRow = cell.row;
+            _lastSortY = pos.y;
         }
 
         private void NotifySegment(int dir)

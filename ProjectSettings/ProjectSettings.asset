@@ -45,8 +45,8 @@ PlayerSettings:
   expectedBundleIdentifier: com.DefaultCompany.2DProject
   integrityHash: 
   m_HolographicTrackingLossScreen: {fileID: 0}
-  defaultScreenWidth: 1920
-  defaultScreenHeight: 1280
+  defaultScreenWidth: 1280
+  defaultScreenHeight: 720
   defaultScreenWidthWeb: 1280
   defaultScreenHeightWeb: 720
   m_StereoRenderingPath: 0

@@ -21,7 +21,7 @@
 //   - frag 顺序：采样 → HSV 偏移 → 闪白 lerp → 预乘 alpha。alpha 全程不变。
 //   - RGB↔HSV 转换用 Sam Hocevar 无分支算法（WebGL 1.0/2.0 友好）。
 //
-// 兼容性（CLAUDE.md §10 / R-V14）：
+// 兼容性（AGENTS.md §10 / R-V14）：
 //   - built-in 渲染管线语法 + URP 兼容子集；WebGL 1.0/2.0 可编译。
 //   - 不用 SV_VertexID / multi_compile_instancing。
 
@@ -172,3 +172,4 @@ Shader "HeroDefense/SpriteHsvShift"
 
     Fallback "Sprites/Default"
 }
+

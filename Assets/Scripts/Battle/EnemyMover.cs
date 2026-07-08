@@ -8,7 +8,7 @@ namespace HeroDefense.Battle
     /// <summary>
     /// 怪物 waypoint 跟随器（性能热路径）。
     ///
-    /// 设计原则（CLAUDE.md §1）：
+    /// 设计原则（AGENTS.md §1）：
     ///   - C# 负责"每帧位移"性能热路径，避免 Lua 每帧 tick 200 单位
     ///   - 业务（什么时候 spawn / 死亡 / 元素克制）由 Lua 决定
     ///   - 到达营帐 / 路点切换 → 调 Lua 全局函数 Battle_OnEnemyReachCamp
@@ -58,13 +58,11 @@ namespace HeroDefense.Battle
 
         // 头顶血条（2026-06-03）：BattleBridge.Battle_SpawnEnemyAtRow 构建并 BindHpBar 注入。
         //   fill 用 localScale.x 表示 hp 比例（与 UnitView 同款，左 pivot → 从左缘缩放）。
-        //   sprite 在 spawn 后由 Lua Battle_SetSprite 设入 → 用 TryPlaceHpBar 按 sprite 实际高度
-        //   把血条一次性重定位到怪头顶（怪未做 FitSpriteToBlock，体型 = 原图，硬编码 Y 会埋进身体）。
+        //   2026-07-01：怪物运行图高度与武将同步，血条改用固定画布底部锚点偏移，不再按每帧可见 bounds 重排。
         private Transform _hpBar;
         private Transform _hpBarFill;
         private float _hpFillMaxScaleX = 1f;
         private bool _hpBarPlaced;
-        private const float HP_BAR_MARGIN = 0.12f;   // 头顶之上留白（世界单位）
 
         private void Awake()
         {
@@ -94,6 +92,13 @@ namespace HeroDefense.Battle
             _waypoints.Clear();
             if (waypoints != null) _waypoints.AddRange(waypoints);
             _wpIndex = 0;
+            // 玩法重构 P2a：通关怪可在网格内生成（spawn_mode=last_col/right_random）。怪朝左基地推进(X 递减)，
+            //   跳过出生点右侧(X>=spawnX)的前导 waypoint，避免先回头向右再左折。始终保留末点(基地)。
+            while (_wpIndex < _waypoints.Count - 1 &&
+                   _waypoints[_wpIndex].x >= spawnPos.x - WAYPOINT_REACH_DIST)
+            {
+                _wpIndex++;
+            }
             _arrived = false;
             transform.position = new Vector3(spawnPos.x, spawnPos.y, 0f);
             if (_sr != null) GridSortingService.UpdateIfChanged(_sr, ref _lastSortY, spawnPos.y);
@@ -122,6 +127,12 @@ namespace HeroDefense.Battle
             _stepActive = true;
         }
 
+        /// <summary>网格步进中被撞停/接战时调用：停在当前 transform 位置，权威 cell 由 Lua 反查后同步。</summary>
+        public void StopStep()
+        {
+            _stepActive = false;
+        }
+
         // ============ 头顶血条（2026-06-03） ============
 
         /// <summary>BattleBridge spawn 后注入头顶血条（hp_bar 下含 fill 子节点）。</summary>
@@ -148,15 +159,17 @@ namespace HeroDefense.Battle
             _hpBarFill.localScale = s;
         }
 
-        /// <summary>sprite 就绪后把血条放到怪头顶上方（按 sprite 实际 world bounds，适配任意怪体型）。一次性。</summary>
+        public void RefreshHpBarLayout()
+        {
+            _hpBarPlaced = false;
+            TryPlaceHpBar();
+        }
+
+        /// <summary>sprite 就绪后按固定画布锚点刷新血条尺寸/层级。</summary>
         private void TryPlaceHpBar()
         {
             if (_hpBarPlaced || _hpBar == null || _sr == null || _sr.sprite == null) return;
-            // root scale=(1,1,1) 且 _sr 在 root 上 → sprite.bounds(local) 顶部即 hp_bar 的 localY。
-            var b = _sr.sprite.bounds;
-            float topY = b.center.y + b.extents.y;
-            var lp = _hpBar.localPosition;
-            _hpBar.localPosition = new Vector3(lp.x, topY + HP_BAR_MARGIN, lp.z);
+            _hpFillMaxScaleX = BattleBridge.LayoutHpBar(_hpBar, _sr);
             _hpBarPlaced = true;
         }
 

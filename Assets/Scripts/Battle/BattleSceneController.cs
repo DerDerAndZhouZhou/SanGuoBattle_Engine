@@ -8,7 +8,7 @@ using HeroDefense.Utils;
 namespace HeroDefense.Battle
 {
     /// <summary>
-    /// Battle 场景根 controller（三路兜底 + 防重入，CLAUDE.md §10 R-V12）。
+    /// Battle 场景根 controller（三路兜底 + 防重入，AGENTS.md §10 R-V12）。
     ///
     /// 场景 Start 在 Tuanjie 1.8.4 + MCP unfocused 状态偶发不触发 →
     /// 必须 Awake + OnEnable + Start + SceneManager.sceneLoaded 4 路兜底，
@@ -49,6 +49,8 @@ namespace HeroDefense.Battle
             // 场景退出时清理（避免句柄泄漏）
             if (_isReady)
             {
+                try { LuaHost.CallGlobal("Battle_OnSceneExit"); }
+                catch (System.Exception e) { Debug.LogError($"[BSC] Lua Battle_OnSceneExit 异常: {e.Message}"); }
                 try { BattleBridge.OnBattleSceneExit(); }
                 catch (System.Exception e) { Debug.LogError($"[BSC] OnBattleSceneExit 异常: {e.Message}"); }
                 try { ToggleMainMenuUI(true); }
@@ -106,7 +108,8 @@ namespace HeroDefense.Battle
                 // 1. 初始化 GridMap（先读 grid.txt 参数 → 再读场景预摆的 cell 节点）
                 int gridId = ResolveGridIdForLevel(PendingLevelId);
                 GridMap.InitFromConfig(gridId);
-                GridMap.InitFromScene();
+                if (!GridMap.InitFromScene2DLayout())
+                    GridMap.InitFromScene();
 
                 // 1.5 R3a (2026-06-11)：给对局相机挂 Physics2DRaycaster —— 场上单位输入改走
                 //     EventSystem（UnitView IPointer/IDrag），无此 raycaster 场上单位收不到任何指针事件。
@@ -114,6 +117,7 @@ namespace HeroDefense.Battle
 
                 // 2. 加载场景背景 sprite（Tag=Sky_Bg / Battle_Bg；level.scene_bg_key / sky_bg_key）
                 ApplyBackgroundSprites(PendingLevelId);
+                Battlefield2DLayoutBridge.ApplyVisuals();
 
                 // 3. 隐藏 MainMenu UI（持久 UIWindow 切到对局 HUD 模式）
                 ToggleMainMenuUI(false);

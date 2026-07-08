@@ -13,7 +13,7 @@ namespace HeroDefense.Battle
     /// <summary>
     /// 单位视图（兵种 / 武将 / 建筑 / 怪 通用）。
     ///
-    /// 设计原则（CLAUDE.md §1）：
+    /// 设计原则（AGENTS.md §1）：
     ///   - 0 SerializeField — 用 UIFinder 子节点查找 hp_bar / shadow / sprite_root
     ///   - **不存业务数据**（不存 hp/atk/lv 数值 — 那是 Lua 的）
     ///   - 持 long Handle（BattleBridge 句柄表 key），业务 Lua 通过 handle 操作
@@ -73,12 +73,14 @@ namespace HeroDefense.Battle
         // ============ Round 12 — 多占位 footprint（Issue 1 + Issue 4） ============
         // SetFootprint 由 BattleBridge.Battle_SpawnUnit 在 spawn 后按 occupy.txt 调用：
         //   - collider 覆盖整个 w×h 占位格 → 点任意占位格都能起手拖（Issue 1）
-        //   - sprite_root 重定位到 block 几何中心 + 缩放铺满 block → sprite 覆盖占位格（Issue 4）
-        // root GameObject scale 始终 (1,1,1)；所有缩放只在 sprite_root.localScale 上（不影响 collider）。
+        //   - sprite_root 按 block 脚底站位点锚定；显示尺寸对齐拖拽 UI ghost，不再按格子压缩
+        // root GameObject scale 始终 (1,1,1)；视觉缩放只设在 sprite_root.localScale。
         private int _fpW = 1;
         private int _fpH = 1;
         private float _blockW = CELL_W;   // block 世界包围盒宽（含一整个 cell）
         private float _blockH = CELL_H;
+        private float _dragGhostScale = 0f;
+
         // cell 视觉世界尺寸：R1a 经 grid.tab cell_w/cell_h → GridMap.CellSizeX/Y 配置化（默认 1.28×0.96）。
         // 单位在 grid 初始化后才 spawn → 取值时 GridMap 已加载；与 CellView.EnsureCellScale 同源。
         private static float CELL_W => GridMap.CellSizeX;
@@ -155,8 +157,8 @@ namespace HeroDefense.Battle
             if (Sr != null)
             {
                 Sr.sprite = sprite;
-                // Round 12 — sprite 换了，若已有 footprint 重新铺满 block
-                if (_fpW > 0 && sprite != null) FitSpriteToBlock();
+                // Sprite 换了，若已有 footprint 重新按脚底站位点锚定。
+                if (_fpW > 0 && sprite != null) FitSpriteToBlock(true);
             }
         }
 
@@ -164,13 +166,14 @@ namespace HeroDefense.Battle
         {
             var wp = GridMap.CellToWorld(row, col);
             transform.position = new Vector3(wp.x, wp.y, 0f);
-            if (Sr != null) GridSortingService.UpdateIfChanged(Sr, ref _sortYRef, wp.y);
+            ApplyGridRowSorting(row, wp.y);
         }
 
         public void SetWorldPosition(float wx, float wy)
         {
             transform.position = new Vector3(wx, wy, 0f);
-            if (Sr != null) GridSortingService.UpdateIfChanged(Sr, ref _sortYRef, wy);
+            var cell = GridMap.WorldToCell(new Vector2(wx, wy));
+            ApplyGridRowSorting(cell.row, wy);
         }
 
         /// <summary>hp 比例（0..1）。优先 Image.fillAmount，回退 child fill scaleX。</summary>
@@ -386,8 +389,9 @@ namespace HeroDefense.Battle
             bc.size = new Vector2(_blockW, _blockH);
             bc.offset = new Vector2(offset.x, offset.y);
 
-            // sprite 已设 → 立即铺满 block（Issue 4）
-            if (sr != null && sr.sprite != null) FitSpriteToBlock();
+            // sprite 已设 → 立即按 footprint 锚定；显示尺寸对齐拖拽 UI ghost。
+            if (sr != null && sr.sprite != null) FitSpriteToBlock(true);
+            ApplyGridRowSorting(row, GridMap.CellToWorld(row, col).y);
         }
 
         /// <summary>懒查找 sprite_root 的 SpriteRenderer（兜底 Awake 未跑 / UIFinder 失配）。</summary>
@@ -401,98 +405,102 @@ namespace HeroDefense.Battle
         }
 
         /// <summary>
-        /// 把 sprite 缩放到铺满 w×h block（不依赖 PNG 精确像素，直接按 sprite world bounds 反推）。
-        /// 缩放只设在 sprite_root.localScale（不是 root scale → 不影响 collider）。
-        /// 在 ① SetFootprint 末尾（若 sprite 已设）② Battle_SetSprite/PlayAnim 设完 sprite 后 调用。
-        /// 同一单位各帧 PNG 尺寸相同 → 在 transform 上设一次即可，SpriteAnimator 切帧不重置 localScale。
-        ///
-        /// 2026-05-23 — 红将水平居中修正：
-        ///   红将（刘备/诸葛亮/吕布/曹操）occupy_id=2 (2×2 block) 但美术沿用 1×2_v 尺寸 (256W×384H)，
-        ///   block 宽高比 ≠ sprite 宽高比，原版直接 scale 拉伸会把 256 宽美术水平拉伸到 2 格宽 → 形变。
-        ///   改为 aspect-aware：sprite 宽高比 < block 宽高比 时（sprite 比 block 「更瘦」），
-        ///     按高度等比缩放，水平方向自然留白 + 居中（sprite_root.localPosition 已在 SetFootprint
-        ///     设到 block 几何中心，等比缩放后 sprite 直接居中在 block 内）。
-        ///   sprite 与 block 宽高比一致（兵种 + 蓝/紫/橙将的 occupy_id=4 / 1×1 / 2×1 等）→ 保持原拉伸路径，
-        ///   不引入回归（aspect 相等 → 两路径数值一致）。
-        ///   sprite 宽高比 > block 宽高比（sprite 比 block 「更宽」，理论上未来才会出现）→ 按宽度等比缩放
-        ///     垂直留白 + 居中，同样不形变。
+        /// 按 footprint 锚定 sprite，显示尺寸对齐拖拽 UI ghost 的屏幕像素大小。
+        /// 注意：SpriteRenderer 的 scale=1 是 world PPU 尺寸，不等于 UI 像素尺寸；
+        /// 这里按当前战斗相机和 Canvas scaleFactor 把 UI 像素尺寸换算成 world scale。
         /// </summary>
-        public void FitSpriteToBlock()
+        // collider 不随图片扩张：始终 = 占位格（SetFootprint 设），图片不可点 / 不挡邻格。
+        public void FitSpriteToBlock(bool recomputeScale = false)
         {
             var sr = ResolveSr();
             if (sr == null || sr.sprite == null) return;
-            var sz = sr.sprite.bounds.size;   // world units（已含 pixelsPerUnit）
+            var sz = sr.sprite.bounds.size;   // world units（已含 pixelsPerUnit=100，全工程恒定）
             if (sz.x <= 0f || sz.y <= 0f) return;
 
-            float spriteAspect = sz.x / sz.y;
-            float blockAspect = _blockW / _blockH;
-            // 容差：避免浮点 0.6667 vs 0.6666 误判进 letterbox 分支造成微小留白
-            const float ASPECT_EPS = 0.01f;
+            if (recomputeScale || _dragGhostScale <= 0f)
+                _dragGhostScale = CalcDragGhostEquivalentScale(sr.sprite, sz);
+            float s = _dragGhostScale;
+            sr.transform.localScale = new Vector3(s, s, 1f);
 
-            float sx, sy;
-            bool bottomAlign = false;
-            if (Mathf.Abs(spriteAspect - blockAspect) <= ASPECT_EPS)
-            {
-                // 宽高比一致 → 直接铺满（与旧版数值一致）
-                sx = _blockW / sz.x;
-                sy = _blockH / sz.y;
-            }
-            else if (spriteAspect < blockAspect)
-            {
-                if (_fpW == 1 && _fpH == 1)
-                {
-                    // 2026-06-11 验收修复④（设计块2.4-(2) 角色/器械占 1 格）：1×1 占位 + 竖版立绘（256×384）→
-                    // 按宽度等比缩放（角色 = 1 格宽，符美术规范「内容占单 cell 宽 95%」），身高自然溢出到格子上方，
-                    // sprite 底边对齐 block 底边（角色"站"在自己格子上）；溢出部分由 Y-sort 正常遮挡。
-                    float s = _blockH / sz.y;   // 2026-06-14 Q2: 改高度适配, 整图"塞进格内"+居中(撤销旧"按宽缩放+底边对齐"拔高2格)
-                    sx = s; sy = s;
-                    // bottomAlign 保持 false: 立绘缩到 <=1 格、居中(与怪物 FitEnemyToCell 同效 -> 同行对齐, 不再竖直错位/相邻行重叠)
-                }
-                else
-                {
-                    // sprite 更瘦 → 按高度等比缩放，水平居中（红将 256×384 → 2×2 block）
-                    float s = _blockH / sz.y;
-                    sx = s; sy = s;
-                }
-            }
-            else
-            {
-                // sprite 更宽 → 按宽度等比缩放，垂直居中（未来扩展）
-                float s = _blockW / sz.x;
-                sx = s;
-                sy = s;
-            }
-            sr.transform.localScale = new Vector3(sx, sy, 1f);
-
-            // sprite_root 定位（幂等，FitSpriteToBlock 每次 SetSprite 后都会调）：
-            //   默认 = block 几何中心（与 SetFootprint 一致）；贴底路径 = 底边对齐 block 底边 + 水平按 bounds 居中。
-            //   bounds 是 pivot 相对（pre-scale）→ 乘 scale 后参与定位，任意 pivot 美术都成立。
+            // 锚定：整张图片画布底部中心对齐格子站位点。
+            // 攻击/死亡需要更宽画布时，资源生产阶段必须保持同状态所有帧
+            // 画布尺寸一致、人物脚底/主体锚点仍在画布底部中心。
             float baseX = (_fpW - 1) * 0.5f * CELL_W;
             float baseY = -(_fpH - 1) * 0.5f * CELL_H;
+            float blockBottom = baseY - _blockH * 0.5f;
             var bb = sr.sprite.bounds;
             var lp0 = sr.transform.localPosition;
-            if (bottomAlign)
-            {
-                float blockBottom = baseY - _blockH * 0.5f;
-                float lx = baseX - bb.center.x * sx;
-                float ly = blockBottom - (bb.center.y - bb.extents.y) * sy;
-                sr.transform.localPosition = new Vector3(lx, ly, lp0.z);
+            float lx = baseX - bb.center.x * s;
+            float ly = blockBottom - (bb.center.y - bb.extents.y) * s;
+            sr.transform.localPosition = new Vector3(lx, ly, lp0.z);
+            RefreshHpBarLayout(sr);
+        }
 
-                // 审查 E (2026-06-11)：立绘溢出格上方后 collider 仍只盖 1 cell → 点头/胸拖不动（核心交互高频迷惑）。
-                // 把 collider 拉高到 sprite 视觉包围盒（底边对齐 block 底边向上扩）。代价：与上一行单位 collider
-                // 可能重叠、OnMouse 拾取不保证按 Y-sort 取前者 → 已知小概率误拾，R3 GestureArbiter 统一解决。
-                float visH = bb.size.y * sy;
-                var bc2 = GetComponent<BoxCollider2D>();
-                if (bc2 != null && visH > _blockH)
-                {
-                    bc2.size = new Vector2(_blockW, visH);
-                    bc2.offset = new Vector2(baseX, blockBottom + visH * 0.5f);
-                }
-            }
-            else
-            {
-                sr.transform.localPosition = new Vector3(baseX, baseY, lp0.z);
-            }
+        internal static float CalcScreenPixelEquivalentScale(Sprite sprite, Vector2 spriteWorldSize)
+        {
+            if (sprite == null || spriteWorldSize.y <= 0f) return 1f;
+
+            var cam = ResolveBattleCamera();
+            if (cam == null || !cam.orthographic) return 1f;
+
+            float pixelHeight = cam.pixelHeight > 0 ? cam.pixelHeight : Screen.height;
+            if (pixelHeight <= 0f) return 1f;
+
+            float worldPerScreenPixel = (cam.orthographicSize * 2f) / pixelHeight;
+            float canvasScale = ResolveRootCanvasScaleFactor();
+            float desiredWorldHeight = sprite.rect.height * canvasScale * worldPerScreenPixel;
+            if (desiredWorldHeight <= 0f) return 1f;
+
+            return desiredWorldHeight / spriteWorldSize.y;
+        }
+
+        private static float CalcDragGhostEquivalentScale(Sprite sprite, Vector2 spriteWorldSize)
+        {
+            return CalcScreenPixelEquivalentScale(sprite, spriteWorldSize);
+        }
+
+        private static Camera ResolveBattleCamera()
+        {
+            var go = GameObject.Find("BattleCamera");
+            var cam = go != null ? go.GetComponent<Camera>() : null;
+            return cam != null ? cam : Camera.main;
+        }
+
+        private static float ResolveRootCanvasScaleFactor()
+        {
+            var root = GameObject.Find("RootWindow");
+            Canvas canvas = root != null ? root.GetComponentInParent<Canvas>() : null;
+            if (canvas == null) canvas = Object.FindObjectOfType<Canvas>();
+            return canvas != null && canvas.scaleFactor > 0f ? canvas.scaleFactor : 1f;
+        }
+
+        private void ApplyGridRowSorting(int row, float sortY)
+        {
+            var sr = ResolveSr();
+            if (sr == null) return;
+            sr.sortingOrder = GridSortingService.CalcSortingOrderForRow(row);
+            _sortYRef = sortY;
+            RefreshHpBarLayout(sr);
+        }
+
+        private Transform ResolveHpBarRoot()
+        {
+            if (HpBarRoot != null) return HpBarRoot;
+            HpBarRoot = UIFinder.FindChildByName(transform, "hp_bar");
+            if (HpBarRoot == null) return null;
+            _hpBarImage = HpBarRoot.GetComponent<Image>();
+            _hpBarFill = UIFinder.FindChildByName(HpBarRoot, "fill");
+            if (_hpBarFill != null) _hpBarMaxScaleX = Mathf.Max(0.0001f, _hpBarFill.localScale.x);
+            return HpBarRoot;
+        }
+
+        private void RefreshHpBarLayout(SpriteRenderer sr)
+        {
+            var hp = ResolveHpBarRoot();
+            if (hp == null || sr == null || sr.sprite == null) return;
+            float fullW = BattleBridge.LayoutHpBar(hp, sr);
+            _hpBarFill = UIFinder.FindChildByName(hp, "fill");
+            if (_hpBarFill != null) _hpBarMaxScaleX = fullW;
         }
 
         public void OnPointerDown(UnityEngine.EventSystems.PointerEventData e)

@@ -157,6 +157,8 @@ namespace HeroDefense.Config
         public static int atHeroFirst;
         public static int atBuildingFirst;
         public static int atNoAttack;
+        public static int atRoleFirst;
+        public static int atMageFirst;
     }
 
     // 统一随机池系统：random_pool.txt 的 generate_type 列。

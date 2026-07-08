@@ -11,11 +11,11 @@ namespace HeroDefense.Battle
     /// <summary>
     /// Lua → C# Battle 桥（v3 design.md §4.2.1）。
     ///
-    /// 设计原则（CLAUDE.md §1.1 + §6）：
+    /// 设计原则（AGENTS.md §1.1 + §6）：
     ///   - 全 static，便于 Lua 端走 `CS.HeroDefense.Battle.BattleBridge.XXX()` 或经 LuaHost 注入的 Battle_* 全局函数
     ///   - **不写业务**（不判断"该不该 spawn"，仅执行）
     ///   - 句柄表 long → UnitView / EnemyMover / ProjectileTicker，Lua 仅持 handle
-    ///   - tuple 拆分避 xLua delegate userdata 坑（CLAUDE.md §10 R-V8）：
+    ///   - tuple 拆分避 xLua delegate userdata 坑（AGENTS.md §10 R-V8）：
     ///       Vector2 / (row,col) 返回 → 拆为 _X / _Y / _Row / _Col 多个标量函数
     ///   - SpawnUnit / DestroyUnit 同步维护 HitFeedback.RegisterHandle / UnregisterHandle（Agent E 表现层句柄表）
     ///
@@ -37,6 +37,8 @@ namespace HeroDefense.Battle
         private static long _handleCounter = 1;
         private static readonly Dictionary<long, UnitView> _units = new Dictionary<long, UnitView>();
         private static readonly Dictionary<long, EnemyMover> _enemies = new Dictionary<long, EnemyMover>();
+        // 2026-06-30 — 怪物身体基准缩放缓存（按 idle 算一次·切动作复用·见 FitEnemyToCell）。
+        private static readonly Dictionary<long, float> _enemyFitScale = new Dictionary<long, float>();
         private static readonly Dictionary<long, ProjectileTicker> _projectiles = new Dictionary<long, ProjectileTicker>();
 
         // Step 11 投射物池：上限 30（GameConfig.max_projectiles）
@@ -52,6 +54,13 @@ namespace HeroDefense.Battle
         // T203 (2026-05-21) — 血量条 1×1 白色 sprite 缓存（center + left pivot 两种）
         private static Sprite _whitePixelSpriteCenter;
         private static Sprite _whitePixelSpriteLeft;
+        private static Sprite _hpBarBgSprite;
+        private static Sprite _hpBarFillAllySprite;
+        private static Sprite _hpBarFillEnemySprite;
+        private static readonly Dictionary<int, Rect> _spriteVisibleRectCache = new Dictionary<int, Rect>();
+        private const float HP_BAR_WIDTH = 0.72f;
+        private const float HP_BAR_HEIGHT = 0.09f;
+        private const float HP_BAR_LOCAL_Y = 1.78f;
         private static Sprite GetOrCreateWhitePixelSprite(bool leftPivot)
         {
             ref var cache = ref _whitePixelSpriteCenter;
@@ -63,32 +72,51 @@ namespace HeroDefense.Battle
             return cache;
         }
 
+        private static Sprite LoadHpBarSprite(string relPath, bool leftPivot, ref Sprite cache)
+        {
+            if (cache != null) return cache;
+            var src = HeroDefense.Engine.Host.LuaHost.LoadSprite(relPath, false);
+            if (src == null) return null;
+            var pivot = leftPivot ? new Vector2(0f, 0.5f) : new Vector2(0.5f, 0.5f);
+            cache = Sprite.Create(src.texture, src.textureRect, pivot, src.pixelsPerUnit);
+            return cache;
+        }
+
+        private static Vector3 ScaleForWorldSize(Sprite sprite, float worldW, float worldH)
+        {
+            if (sprite == null) return new Vector3(worldW, worldH, 1f);
+            var sz = sprite.bounds.size;
+            float sx = worldW / Mathf.Max(0.0001f, sz.x);
+            float sy = worldH / Mathf.Max(0.0001f, sz.y);
+            return new Vector3(sx, sy, 1f);
+        }
+
         // T203/T214 hp_bar 真渲染。2026-06-03 抽出供 unit + enemy 复用（原仅 Battle_SpawnUnit 内联，
         //   导致怪物无血条 — 怪 spawn 路径从不建 hp_bar）。
         //   父节点 hp_bar 不带 SpriteRenderer（不缩放）,只作位置锚；子节点 bg/fill 各自独立 SpriteRenderer
         //   用自己 localScale 决定可见尺寸（父 scale 会让 fill 起点不在 bg 左缘 → 满血前有黑边）。
-        //   尺寸 1/3 缩(宽 0.17,高 0.03),fill 满血时严格覆盖 bg。
+        //   2026-07-01 用户修正：角色运行图高度固定后，血条不再按序列帧可见 bounds 动态找头顶，
+        //   统一固定在整张画布底部锚点上方，避免切帧时漂移。
         //   baseSr   — 宿主精灵渲染器：取其 sortingLayer + order 作血条层级基准（血条叠其上 +100/+101），
         //              使 unit 血条在 Tower 层、enemy 血条在 Enemy 层，各自盖住本体。
-        //   localY   — hp_bar 相对 root 的初始高度（enemy 之后由 EnemyMover 按 sprite 实际高度重定位到头顶）。
+        //   localY   — 兼容旧签名；实际使用固定 HP_BAR_LOCAL_Y。
         //   fillColor— 进度条颜色（友军绿 / 敌军红）。
         private static GameObject BuildHpBar(GameObject root, SpriteRenderer baseSr, float localY, Color fillColor)
         {
-            const float HP_W = 0.17f;
-            const float HP_H = 0.03f;
             int layerId = baseSr != null ? baseSr.sortingLayerID : 0;
             int baseOrder = baseSr != null ? baseSr.sortingOrder : 0;
 
             var hpBar = new GameObject("hp_bar");
             hpBar.transform.SetParent(root.transform, false);
-            hpBar.transform.localPosition = new Vector3(0f, localY, 0f);
+            hpBar.transform.localPosition = new Vector3(0f, HP_BAR_LOCAL_Y, 0f);
 
             var hpBg = new GameObject("bg", typeof(SpriteRenderer));
             hpBg.transform.SetParent(hpBar.transform, false);
-            hpBg.transform.localScale = new Vector3(HP_W, HP_H, 1f);
             var bgSr = hpBg.GetComponent<SpriteRenderer>();
-            bgSr.sprite = GetOrCreateWhitePixelSprite(false);
-            bgSr.color = new Color(0f, 0f, 0f, 0.9f);   // 黑底
+            var bgSprite = LoadHpBarSprite("resources/art/ui/hp_bar/hp_bar_bg.png", false, ref _hpBarBgSprite);
+            bool bgUsesAsset = bgSprite != null;
+            bgSr.sprite = bgUsesAsset ? bgSprite : GetOrCreateWhitePixelSprite(false);
+            bgSr.color = bgUsesAsset ? Color.white : new Color(0f, 0f, 0f, 0.9f);
             bgSr.sortingLayerID = layerId;
             // 审查 K (2026-06-11)：+100 偏移会被「向下走 ≥2 行」的 Y-sort 增量(~96/行)反超 → 血条被本体盖住
             //（R2 行走 + 1×1 立绘贴底加高后逐帧可见）。改 +1000 = 高于全场单位 sprite 的 Y-sort 跨度(~768)，
@@ -97,15 +125,117 @@ namespace HeroDefense.Battle
 
             var hpFill = new GameObject("fill", typeof(SpriteRenderer));
             hpFill.transform.SetParent(hpBar.transform, false);
-            hpFill.transform.localPosition = new Vector3(-HP_W * 0.5f, 0f, 0f);   // bg 左缘
-            hpFill.transform.localScale = new Vector3(HP_W, HP_H, 1f);            // 满血与 bg 同宽
             var fillSr = hpFill.GetComponent<SpriteRenderer>();
-            fillSr.sprite = GetOrCreateWhitePixelSprite(true);   // 左 pivot → 从左缘缩放
-            fillSr.color = fillColor;
+            bool ally = fillColor.g >= fillColor.r;
+            var fillSprite = ally
+                ? LoadHpBarSprite("resources/art/ui/hp_bar/hp_bar_fill_ally.png", true, ref _hpBarFillAllySprite)
+                : LoadHpBarSprite("resources/art/ui/hp_bar/hp_bar_fill_enemy.png", true, ref _hpBarFillEnemySprite);
+            bool fillUsesAsset = fillSprite != null;
+            fillSr.sprite = fillUsesAsset ? fillSprite : GetOrCreateWhitePixelSprite(true);
+            fillSr.color = fillUsesAsset ? Color.white : fillColor;
             fillSr.sortingLayerID = layerId;
             fillSr.sortingOrder = baseOrder + 1001;
+            LayoutHpBar(hpBar.transform, baseSr);
             hpBar.SetActive(true);
             return hpBar;
+        }
+
+        internal static float LayoutHpBar(Transform hpBar, SpriteRenderer baseSr)
+        {
+            if (hpBar == null) return 1f;
+            var lp = hpBar.localPosition;
+            hpBar.localPosition = new Vector3(0f, HP_BAR_LOCAL_Y, lp.z);
+
+            var bg = hpBar.Find("bg");
+            var fill = hpBar.Find("fill");
+            float oldMax = bg != null ? Mathf.Max(0.0001f, bg.localScale.x) : 1f;
+            float pct = 1f;
+            if (fill != null) pct = Mathf.Clamp01(fill.localScale.x / oldMax);
+
+            var bgSr = bg != null ? bg.GetComponent<SpriteRenderer>() : null;
+            var fillSr = fill != null ? fill.GetComponent<SpriteRenderer>() : null;
+            var bgScale = ScaleForWorldSize(bgSr != null ? bgSr.sprite : null, HP_BAR_WIDTH, HP_BAR_HEIGHT);
+            var fillScale = ScaleForWorldSize(fillSr != null ? fillSr.sprite : null, HP_BAR_WIDTH, HP_BAR_HEIGHT);
+            if (bg != null) bg.localScale = bgScale;
+            if (fill != null)
+            {
+                fill.localPosition = new Vector3(-HP_BAR_WIDTH * 0.5f, 0f, 0f);
+                fill.localScale = new Vector3(fillScale.x * pct, fillScale.y, 1f);
+            }
+
+            int layerId = baseSr != null ? baseSr.sortingLayerID : 0;
+            int baseOrder = baseSr != null ? baseSr.sortingOrder : 0;
+            if (bgSr != null)
+            {
+                bgSr.sortingLayerID = layerId;
+                bgSr.sortingOrder = baseOrder + 1000;
+            }
+            if (fillSr != null)
+            {
+                fillSr.sortingLayerID = layerId;
+                fillSr.sortingOrder = baseOrder + 1001;
+            }
+
+            return fillScale.x;
+        }
+
+        internal static Rect GetSpriteVisibleLocalRect(Sprite sprite)
+        {
+            if (sprite == null) return Rect.zero;
+            int key = sprite.GetInstanceID();
+            if (_spriteVisibleRectCache.TryGetValue(key, out var cached)) return cached;
+
+            var fallback = Rect.MinMaxRect(sprite.bounds.min.x, sprite.bounds.min.y, sprite.bounds.max.x, sprite.bounds.max.y);
+            try
+            {
+                var tex = sprite.texture;
+                if (tex == null)
+                {
+                    _spriteVisibleRectCache[key] = fallback;
+                    return fallback;
+                }
+
+                var texRect = sprite.textureRect;
+                int x0 = Mathf.Clamp(Mathf.FloorToInt(texRect.xMin), 0, tex.width);
+                int x1 = Mathf.Clamp(Mathf.CeilToInt(texRect.xMax), 0, tex.width);
+                int y0 = Mathf.Clamp(Mathf.FloorToInt(texRect.yMin), 0, tex.height);
+                int y1 = Mathf.Clamp(Mathf.CeilToInt(texRect.yMax), 0, tex.height);
+                var pixels = tex.GetPixels32();
+                int minX = int.MaxValue, maxX = int.MinValue, minY = int.MaxValue, maxY = int.MinValue;
+
+                for (int y = y0; y < y1; y++)
+                {
+                    int row = y * tex.width;
+                    for (int x = x0; x < x1; x++)
+                    {
+                        if (pixels[row + x].a <= 8) continue;
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                    }
+                }
+
+                if (minX == int.MaxValue)
+                {
+                    _spriteVisibleRectCache[key] = fallback;
+                    return fallback;
+                }
+
+                float ppu = sprite.pixelsPerUnit;
+                float lx0 = sprite.bounds.min.x + (minX - texRect.xMin) / ppu;
+                float lx1 = sprite.bounds.min.x + (maxX + 1 - texRect.xMin) / ppu;
+                float ly0 = sprite.bounds.min.y + (minY - texRect.yMin) / ppu;
+                float ly1 = sprite.bounds.min.y + (maxY + 1 - texRect.yMin) / ppu;
+                var rect = Rect.MinMaxRect(lx0, ly0, lx1, ly1);
+                _spriteVisibleRectCache[key] = rect;
+                return rect;
+            }
+            catch
+            {
+                _spriteVisibleRectCache[key] = fallback;
+                return fallback;
+            }
         }
 
         private static long NextHandle() => _handleCounter++;
@@ -174,6 +304,7 @@ namespace HeroDefense.Battle
                 try { HitFeedback.UnregisterHandle(kv.Key); } catch { /* silent */ }
             }
             _enemies.Clear();
+            _enemyFitScale.Clear();
 
             foreach (var kv in _projectiles)
             {
@@ -211,7 +342,7 @@ namespace HeroDefense.Battle
                 spriteRoot.transform.SetParent(go.transform, false);
                 var sr = spriteRoot.AddComponent<SpriteRenderer>();
                 sr.sortingLayerName = HDSortingLayers.Tower;
-                sr.sortingOrder = GridSortingService.CalcSortingOrder(wp.y);
+                sr.sortingOrder = GridSortingService.CalcSortingOrderForRow(row);
 
                 // T203/T214 hp_bar（2026-06-03 抽 BuildHpBar 复用）：友军绿，头顶 0.4。
                 BuildHpBar(go, sr, 0.4f, new Color(0.2f, 1f, 0.2f, 1f));
@@ -261,6 +392,7 @@ namespace HeroDefense.Battle
             else if (_enemies.TryGetValue(handle, out var em))
             {
                 _enemies.Remove(handle);
+                _enemyFitScale.Remove(handle);
                 try { HitFeedback.UnregisterHandle(handle); } catch { /* silent */ }
                 if (em != null && em.gameObject != null) Object.Destroy(em.gameObject);
             }
@@ -498,17 +630,29 @@ namespace HeroDefense.Battle
             return _fallbackSprite;
         }
 
-        // 2026-06-14 Q2 — 怪物"塞进 1 格": 怪 sprite 在 root(pivot 居中), 按限制维度等比缩放 root 使整图 <=1 cell、
-        // 居中于格心; hp_bar 是 root 子节点 -> 随之等比、仍贴头顶。与武将 FitSpriteToBlock 的 1×1 高度适配同效 -> 同行对齐。
-        private static void FitEnemyToCell(long handle)
+        // 怪物尺寸与武将同步：root 只负责世界位置，sprite_root 负责图片缩放/脚底锚定。
+        // 按首帧计算一次 UI 像素等效缩放，切动画帧复用，避免攻击帧画布变化导致身体缩放抖动。
+        private static void FitEnemyToCell(long handle, bool recomputeScale = false)
         {
             if (!_enemies.TryGetValue(handle, out var em) || em == null) return;
             var sr = em.GetComponentInChildren<SpriteRenderer>();
             if (sr == null || sr.sprite == null) return;
-            var sz = sr.sprite.bounds.size;
-            if (sz.x <= 0.0001f || sz.y <= 0.0001f) return;
-            float s = Mathf.Min(GridMap.CellSizeX / sz.x, GridMap.CellSizeY / sz.y);
-            em.transform.localScale = new Vector3(s, s, 1f);
+            float s;
+            if (recomputeScale || !_enemyFitScale.TryGetValue(handle, out s) || s <= 0f)
+            {
+                var sz = sr.sprite.bounds.size;
+                if (sz.x <= 0.0001f || sz.y <= 0.0001f) return;
+                s = UnitView.CalcScreenPixelEquivalentScale(sr.sprite, sz);
+                _enemyFitScale[handle] = s;
+            }
+            sr.transform.localScale = new Vector3(s, s, 1f);
+
+            var bb = sr.sprite.bounds;
+            var lp0 = sr.transform.localPosition;
+            float lx = -bb.center.x * s;
+            float ly = -GridMap.CellSizeY * 0.5f - (bb.center.y - bb.extents.y) * s;
+            sr.transform.localPosition = new Vector3(lx, ly, lp0.z);
+            em.RefreshHpBarLayout();
         }
 
         public static void Battle_SetSprite(long handle, string spriteKey)
@@ -537,9 +681,9 @@ namespace HeroDefense.Battle
             var sr = GetRenderer(handle);
             if (sr != null) sr.sprite = sprite;
 
-            // Round 12 Issue 4 — sprite 设好后按 footprint 铺满 block（多占位单位 sprite 覆盖占位格）
-            if (_units.TryGetValue(handle, out var uv) && uv != null) uv.FitSpriteToBlock();
-            else FitEnemyToCell(handle);   // 2026-06-14 Q2: 怪物也"塞进 1 格"
+            // sprite 设好后按 footprint 脚底锚定；友军单位尺寸对齐拖拽 UI ghost，不再按格子压缩。
+            if (_units.TryGetValue(handle, out var uv) && uv != null) uv.FitSpriteToBlock(true);
+            else FitEnemyToCell(handle, true);   // 怪物按武将同尺寸显示；换底图(idle)→重算身体基准缩放
         }
 
         public static void Battle_PlayAnim(long handle, string stateName)
@@ -572,10 +716,9 @@ namespace HeroDefense.Battle
             bool looping = IsLoopingState(stateName);
             anim.Play(stateName, frames, fps: ScaledFps(stateName, speedMult), looping: looping);  // fps 随攻速倍率缩放(整数取整)
 
-            // Round 12 Issue 4 — Play 已把首帧设到 SpriteRenderer，按 footprint 铺满 block。
-            // 同一单位各帧 PNG 尺寸相同 → fit 一次即可，SpriteAnimator 切帧只改 sprite 不动 localScale。
+            // Play 已把首帧设到 SpriteRenderer，按 footprint 脚底锚定；友军单位尺寸对齐拖拽 UI ghost。
             if (_units.TryGetValue(handle, out var uv) && uv != null) uv.FitSpriteToBlock();
-            else FitEnemyToCell(handle);   // 2026-06-14 Q2: 怪物也"塞进 1 格"
+            else FitEnemyToCell(handle);   // 切态复用 idle 身体基准缩放(不重算→身体不缩·兵器溢出)
         }
 
         // v2 批 1b（2026-06-14）C#④：取某单位/怪某动画状态在给定攻速倍率下的播放时长（秒）。
@@ -855,6 +998,10 @@ namespace HeroDefense.Battle
         // v7：左基地在网格最左列(col1)左侧一格。从 CellView 边缘算（不依赖 CampVisual 摆位时机/camp_rect）。
         private static Vector2 GetCampWorldPos()
         {
+            Battlefield2DLayoutBridge.CampWallLayout layout;
+            if (Battlefield2DLayoutBridge.TryGetCampWallLayout("left", out layout))
+                return new Vector2(layout.x, layout.y);
+
             float colStep = Mathf.Abs(GridMap.CellToWorld(1, 2).x - GridMap.CellToWorld(1, 1).x);
             if (colStep < 0.01f) colStep = 1.28f;
             var edge = GridMap.CellToWorld(4, 1);
@@ -876,7 +1023,9 @@ namespace HeroDefense.Battle
                 var go = new GameObject($"Enemy_{monsterId}_lane{laneId}");
                 go.transform.position = new Vector3(spawnX, spawnY, 0f);
 
-                var sr = go.AddComponent<SpriteRenderer>();
+                var spriteRoot = new GameObject("sprite_root");
+                spriteRoot.transform.SetParent(go.transform, false);
+                var sr = spriteRoot.AddComponent<SpriteRenderer>();
                 sr.sortingLayerName = HDSortingLayers.Enemy;
                 sr.sortingOrder = GridSortingService.CalcSortingOrder(spawnY);
 
@@ -965,6 +1114,16 @@ namespace HeroDefense.Battle
             return -1;
         }
 
+        /// <summary>怪物网格步进中接战：停在当前视觉位置并返回当前 cellId，Lua 负责同步 e.row/e.col 与占格表。</summary>
+        public static int Battle_GetEnemyCellAndStop(long handle)
+        {
+            if (!_enemies.TryGetValue(handle, out var em) || em == null) return -1;
+            em.StopStep();
+            var p = em.transform.position;
+            var cell = GridMap.WorldToCell(new Vector2(p.x, p.y));
+            return GridMap.RowColToCellId(cell.row, cell.col);
+        }
+
         // ============ 三区桥接（R1b 2026-06-10）============
 
         /// <summary>Lua（camp 管理）战斗开始 + 基地升级时推入三区列数。通关模式 enemyCols 传 0（R6 假对局再接）。
@@ -974,6 +1133,7 @@ namespace HeroDefense.Battle
         public static bool Battle_IsCellInOwnZone(int row, int col) => GridMap.IsCellInOwnZone(row, col);
         public static bool Battle_IsCellInPublicZone(int row, int col) => GridMap.IsCellInPublicZone(row, col);
         public static bool Battle_IsCellInEnemyZone(int row, int col) => GridMap.IsCellInEnemyZone(row, col);
+        public static string Battle_GetCellZone(int row, int col) => GridMap.GetCellZone(row, col);
 
         // ============ 投射物 1 方法 ============
 
@@ -1320,6 +1480,15 @@ namespace HeroDefense.Battle
             return true;
         }
 
+        /// <summary>P2b: 怪连续移动到任意世界坐标点（围攻环位 / 沿行推进用；亚格精度）。
+        /// StepTo 内部首次调用自动 EnterGridMode（清 lane 路点，转手动 StepTo 控制）。</summary>
+        public static bool Battle_EnemyStepToXY(long handle, float wx, float wy)
+        {
+            if (!_enemies.TryGetValue(handle, out var em) || em == null) return false;
+            em.StepTo(new Vector2(wx, wy));
+            return true;
+        }
+
         /// <summary>P1.6: 瞬移敌人到指定 cell（etKnockback handler 用，跳过寻路）。</summary>
         public static void Battle_SetEnemyCell(long handle, int row, int col)
         {
@@ -1455,6 +1624,17 @@ namespace HeroDefense.Battle
                 }
         }
 
+        /// <summary>
+        /// 开发/编辑器联调用：重新从 2D 场景布局 XML 构建战场格子。
+        /// Lua 业务接口不变；若布局关闭或 XML 失败，返回 false，调用方可继续使用旧场景网格。
+        /// </summary>
+        public static bool Battle_ReloadScene2DLayout()
+        {
+            bool ok = GridMap.InitFromScene2DLayout();
+            Battlefield2DLayoutBridge.ApplyVisuals();
+            return ok;
+        }
+
         public static int Battle_CalcSortingOrder(float worldY) => GridSortingService.CalcSortingOrder(worldY);
 
         // ============ 拖拽 UI Ghost（Bug 4 fix：让 ghost 显示在 InventoryPanel 之上）============
@@ -1464,10 +1644,11 @@ namespace HeroDefense.Battle
 
         private static GameObject _uiGhost;
         private static UnityEngine.UI.Image _uiGhostImage;
+        private const float UI_GHOST_CURSOR_PIVOT_X = 0.5f;
+        private const float UI_GHOST_CURSOR_PIVOT_Y = 0.25f;
 
-        // 2026-05-20 升级：形状中心锚定。pivotX/pivotY 是规格化坐标（0..1），落在 ghost 的占位形状中心格上。
-        // 由 Lua drag_logic 按 occupy.center_offset 计算（公式 pivotX=(dc+0.5)/W, pivotY=(H-dr-0.5)/H）。
-        // 旧调用方传 (0.5, 0.5) 即为几何中心，向后兼容。
+        // 2026-07-01 用户修正：拖拽武将图以鼠标为锚点，鼠标落在图底部向上 1/4 高度处。
+        // pivotX/pivotY 参数保留用于 Lua 兼容，实际 UI ghost 使用固定鼠标锚点。
         public static void Battle_ShowUIGhost(string spriteKey, float sx, float sy, float pivotX, float pivotY)
         {
             EnsureUIGhost();
@@ -1488,9 +1669,7 @@ namespace HeroDefense.Battle
                     if (rt != null)
                     {
                         rt.sizeDelta = new Vector2(sprite.rect.width, sprite.rect.height);
-                        // 2026-05-20 形状中心 pivot：让占位形状的「中心格」(用户拍板：2格=左/上、3格直=中间、3格L=拐点、田字=左上)
-                        // 在视觉上落到鼠标位置，与下面 Lua 侧的 anchor = cursor - center_offset 完全对齐。
-                        rt.pivot = new Vector2(Mathf.Clamp01(pivotX), Mathf.Clamp01(pivotY));
+                        rt.pivot = new Vector2(UI_GHOST_CURSOR_PIVOT_X, UI_GHOST_CURSOR_PIVOT_Y);
                     }
                 }
             }
@@ -1634,7 +1813,7 @@ namespace HeroDefense.Battle
             var rt = _uiGhost.GetComponent<RectTransform>();
             rt.anchorMin = new Vector2(0.5f, 0.5f);
             rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(UI_GHOST_CURSOR_PIVOT_X, UI_GHOST_CURSOR_PIVOT_Y);
             rt.sizeDelta = new Vector2(70, 70);
             _uiGhostImage = _uiGhost.GetComponent<UnityEngine.UI.Image>();
             _uiGhostImage.raycastTarget = false;  // 不拦截事件，让 InventoryPanel 卡仍可点

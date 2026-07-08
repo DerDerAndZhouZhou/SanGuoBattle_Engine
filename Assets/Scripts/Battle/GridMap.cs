@@ -5,7 +5,7 @@ using HeroDefense.Config;
 namespace HeroDefense.Battle
 {
     /// <summary>
-    /// 网格坐标系唯一映射点（CLAUDE.md §10 R-V9 / R-V13 / R-13）。
+    /// 网格坐标系唯一映射点（AGENTS.md §10 R-V9 / R-V13 / R-13）。
     ///
     /// 设计约束：
     ///   - 8×12 网格（v4 2026-05-14 用户拍板，原 v3 是 8×14）
@@ -43,6 +43,11 @@ namespace HeroDefense.Battle
 
         private static bool _initialized;
 
+        // 网格整体平移。GameConfig.grid_x_offset_cells/grid_y_offset_cells（格·可正可负；
+        // x 正=右移，y 正=上移）。在 InitFromScene 把 Grid_Container 整体平移（cell + 子节点一起；
+        // 单位/怪/城墙走 CellToWorld 天然跟随，背景另置不动）。按 container 实例去重，防 TryEnterReady 多次调用累计平移。
+        private static int _shiftedContainerId;
+
         // ============ O(1) 反查格阵缓存（R0 性能前置 2026-06-10）============
         // WorldToCell 旧实现在 Cells!=null（编辑器手摆 cell = 本项目现实）时走 O(Rows×Cols) 最近邻全扫，
         // 是怪移动/寻路每帧每怪的热路径炸弹（tech-research §3 风险2）。改为：InitFromScene 后从实际 cell
@@ -52,11 +57,16 @@ namespace HeroDefense.Battle
         private static float _latOriginX, _latOriginY;   // cell(1,1) 中心世界坐标
         private static float _latStepX, _latStepY;        // 每列 +x / 每行 +y（行 y 通常为负）
 
-        // ============ 三区（R1b 2026-06-10）：己方区(左N列) / 公共区(中间) / 敌方区(右M列）============
-        // 己方区列数 = 基地等级驱动（camp_level.own_zone_cols），由 Lua 经 Battle_SetZones 推入（战斗开始 + 基地升级）。
-        // 敌方区列数：通关模式关卡配置 / 假对局对手 bot 基地等级镜像（R6 接；当前默认 0 = 无敌方区）。
+        // ============ 三区：Scene2D 每格 zone 优先；旧列阈值作为 fallback ============
+        // 旧规则：己方区左 N 列 / 敌方区右 M 列，由 Lua 经 Battle_SetZones 推入。
+        // 新规则：Scene2D Cell 可写 zone=own/enemy/public；存在 zone 表时查询函数优先按每格判定。
         public static int OwnZoneCols = 2;
         public static int EnemyZoneCols = 0;
+        public const string ZoneOwn = "own";
+        public const string ZoneEnemy = "enemy";
+        public const string ZonePublic = "public";
+        private static string[,] _cellZones;  // [row, col] 1-based；null = 走 OwnZoneCols/EnemyZoneCols fallback
+        public static bool HasExplicitZones => _cellZones != null;
 
         /// <summary>从 grid.txt 加载指定 id 的网格配置；幂等多次调用安全。</summary>
         public static void InitFromConfig(int gridId)
@@ -87,6 +97,7 @@ namespace HeroDefense.Battle
 
                 // camp_rect 字段是 int[]：row0,col0,w,h（TabParser 已按 int[] 解析）
                 ParseCampRect(row);
+                ClearCellZones();
 
                 CurrentGridId = gridId;
                 _initialized = true;
@@ -103,8 +114,131 @@ namespace HeroDefense.Battle
         {
             Rows = 8; Cols = 10; CellSizeX = 1.28f; CellSizeY = 0.96f;  // v7 8×10 可玩网格（cell 1.28×0.96）
             CampRectRow0 = 0; CampRectCol0 = 0; CampRectW = 0; CampRectH = 0;  // v7 双基地在网格外,无 in-grid 营帐
+            ClearCellZones();
             _latticeValid = false;   // 格阵缓存在 InitFromScene 后由 ComputeLattice 重建
             _initialized = true;
+        }
+
+        // 网格整体平移（世界单位）：x=GameConfig.grid_x_offset_cells×CellSizeX，y=GameConfig.grid_y_offset_cells×CellSizeY。
+        private static float GridXOffsetWorld()
+        {
+            try
+            {
+                var cm = ConfigManager.Instance;
+                if (cm == null) return 0f;
+                cm.LoadIfNeeded();
+                var row = cm.GetTableInfo("GameConfig", "key", "grid_x_offset_cells");
+                if (row == null) return 0f;
+                float cells = cm.GetValue<float>(row, "value", 0f);
+                return cells * CellSizeX;
+            }
+            catch { return 0f; }
+        }
+
+        private static float GridYOffsetWorld()
+        {
+            try
+            {
+                var cm = ConfigManager.Instance;
+                if (cm == null) return 0f;
+                cm.LoadIfNeeded();
+                var row = cm.GetTableInfo("GameConfig", "key", "grid_y_offset_cells");
+                if (row == null) return 0f;
+                float cells = cm.GetValue<float>(row, "value", 0f);
+                return cells * CellSizeY;
+            }
+            catch { return 0f; }
+        }
+
+        // 45 度战场样板：场景里仍保留预摆 Cell 节点，但运行时可按 grid.tab 的 cell_w/cell_h 重排成规则宽扁格。
+        // 只重排有效 Rows×Cols 内的 CellView，保持原网格中心不变，避免改 Unity 场景资产。
+        private static bool GridRelayoutEnabled()
+        {
+            try
+            {
+                var cm = ConfigManager.Instance;
+                if (cm == null) return false;
+                cm.LoadIfNeeded();
+                var row = cm.GetTableInfo("GameConfig", "key", "grid_relayout_enabled");
+                if (row == null) return false;
+                return cm.GetValue<bool>(row, "value", false);
+            }
+            catch { return false; }
+        }
+
+        private static bool GridPerspectiveEnabled()
+        {
+            try
+            {
+                var cm = ConfigManager.Instance;
+                if (cm == null) return false;
+                cm.LoadIfNeeded();
+                var row = cm.GetTableInfo("GameConfig", "key", "grid_perspective_enabled");
+                if (row == null) return false;
+                return cm.GetValue<bool>(row, "value", false);
+            }
+            catch { return false; }
+        }
+
+        private static float GameConfigFloat(string key, float fallback, float min, float max)
+        {
+            try
+            {
+                var cm = ConfigManager.Instance;
+                if (cm == null) return fallback;
+                cm.LoadIfNeeded();
+                var row = cm.GetTableInfo("GameConfig", "key", key);
+                if (row == null) return fallback;
+                return Mathf.Clamp(cm.GetValue<float>(row, "value", fallback), min, max);
+            }
+            catch { return fallback; }
+        }
+
+        private static void RelayoutCellsFromConfig(GameObject container)
+        {
+            if (!GridRelayoutEnabled() || container == null) return;
+
+            var views = container.GetComponentsInChildren<CellView>(true);
+            float minX = float.MaxValue, maxX = float.MinValue;
+            float minY = float.MaxValue, maxY = float.MinValue;
+            int count = 0;
+
+            foreach (var cv in views)
+            {
+                if (cv == null || cv.Row < 1 || cv.Row > Rows || cv.Col < 1 || cv.Col > Cols) continue;
+                var p = cv.transform.position;
+                minX = Mathf.Min(minX, p.x);
+                maxX = Mathf.Max(maxX, p.x);
+                minY = Mathf.Min(minY, p.y);
+                maxY = Mathf.Max(maxY, p.y);
+                count++;
+            }
+
+            if (count <= 0) return;
+
+            float centerX = (minX + maxX) * 0.5f;
+            float centerY = (minY + maxY) * 0.5f;
+            float startY = centerY + (Rows - 1) * CellSizeY * 0.5f;
+            bool usePerspective = GridPerspectiveEnabled();
+            float topScale = GameConfigFloat("grid_perspective_top_scale", 0.82f, 0.5f, 1.2f);
+            float bottomScale = GameConfigFloat("grid_perspective_bottom_scale", 1.08f, 0.8f, 1.6f);
+
+            foreach (var cv in views)
+            {
+                if (cv == null || cv.Row < 1 || cv.Row > Rows || cv.Col < 1 || cv.Col > Cols) continue;
+                float rowT = Rows > 1 ? (float)(cv.Row - 1) / (Rows - 1) : 0.5f;
+                float rowScale = usePerspective ? Mathf.Lerp(topScale, bottomScale, rowT) : 1f;
+                float stepX = CellSizeX * rowScale;
+                float startX = centerX - (Cols - 1) * stepX * 0.5f;
+                var p = cv.transform.position;
+                p.x = startX + (cv.Col - 1) * stepX;
+                p.y = startY - (cv.Row - 1) * CellSizeY;
+                cv.transform.position = p;
+                cv.SetVisualCellSize(stepX, CellSizeY);
+            }
+
+            string perspectiveNote = usePerspective ? $" perspective top={topScale:F2} bottom={bottomScale:F2}" : "";
+            Debug.Log($"[GridMap] runtime relayout cells center=({centerX:F2},{centerY:F2}) cell=({CellSizeX:F2},{CellSizeY:F2}) rows={Rows} cols={Cols}{perspectiveNote}");
         }
 
         private static void ParseCampRect(Dictionary<string, object> row)
@@ -146,6 +280,39 @@ namespace HeroDefense.Battle
         // ============ 场景节点表（编辑器预摆 cell GameObject） ============
         public static CellView[,] Cells;  // [row, col] 1-based，[0,*] 与 [*,0] 弃用
 
+        /// <summary>
+        /// 从 Game/ui/scene2d 导出的 2D 战场布局构建运行时 CellView。
+        /// 成功后 Cells 与旧场景预摆 CellView 等价，Lua 侧接口不变。
+        /// </summary>
+        public static bool InitFromScene2DLayout()
+        {
+            try
+            {
+                Battlefield2DLayoutBridge.BuildResult result;
+                if (!Battlefield2DLayoutBridge.TryBuildGrid(out result))
+                {
+                    ClearCellZones();
+                    return false;
+                }
+
+                Cells = result.cells;
+                if (result.hasZones) SetCellZones(result.zones);
+                else ClearCellZones();
+                Debug.Log($"[GridMap] InitFromScene2DLayout: {result.path} 加载 {result.found} 个 cell 节点");
+                ComputeLattice();
+                return result.found > 0;
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[GridMap] InitFromScene2DLayout 异常: {e.Message}");
+                Cells = null;
+                ClearCellZones();
+                _latticeValid = false;
+                Battlefield2DLayoutBridge.RestoreLegacyGridIfNeeded();
+                return false;
+            }
+        }
+
         /// <summary>读取 GameScene 中 Tag=Grid_Container 下的 CellView 节点，填到 Cells 表。</summary>
         public static void InitFromScene()
         {
@@ -159,6 +326,17 @@ namespace HeroDefense.Battle
                     _latticeValid = false;
                     return;
                 }
+                // 整体平移（在读 cell 世界坐标前·防多次累计）：cell + 子节点随容器一起移，
+                // 单位/怪/城墙走 CellToWorld 自然跟随，背景不动。
+                float xoff = GridXOffsetWorld();
+                float yoff = GridYOffsetWorld();
+                if ((Mathf.Abs(xoff) > 0.0001f || Mathf.Abs(yoff) > 0.0001f) && _shiftedContainerId != container.GetInstanceID())
+                {
+                    container.transform.position += new Vector3(xoff, yoff, 0f);
+                    _shiftedContainerId = container.GetInstanceID();
+                    Debug.Log($"[GridMap] 网格整体平移 x+={xoff:F2} y+={yoff:F2}（grid_x/y_offset_cells）");
+                }
+                RelayoutCellsFromConfig(container);
                 Cells = new CellView[Rows + 1, Cols + 1];
                 int found = 0;
                 foreach (var cv in container.GetComponentsInChildren<CellView>(true))
@@ -172,6 +350,7 @@ namespace HeroDefense.Battle
                         found++;
                     }
                 }
+                ClearCellZones();
                 Debug.Log($"[GridMap] InitFromScene: 加载 {found} 个 cell 节点");
                 ComputeLattice();   // R0：cell 填好后反推格阵参数，启用 WorldToCell O(1) 快路径
             }
@@ -215,6 +394,11 @@ namespace HeroDefense.Battle
         {
             _latticeValid = false;
             if (Cells == null || Rows < 1 || Cols < 1) return;
+            if (GridPerspectiveEnabled())
+            {
+                Debug.Log("[GridMap] 透视网格启用 → WorldToCell 使用最近格反查");
+                return;
+            }
             var c11 = Cells[1, 1];
             if (c11 == null) return;
             Vector2 o = c11.transform.position;
@@ -300,27 +484,84 @@ namespace HeroDefense.Battle
                 && col < CampRectCol0 + CampRectW;
         }
 
-        // ============ 三区判定（R1b 2026-06-10）：纯整数比较 O(1) ============
+        // ============ 三区判定：Scene2D zone map 优先，列阈值 fallback ============
 
-        /// <summary>设置三区列数（己方区左 N 列 / 敌方区右 M 列）。Lua 在战斗开始 + 基地升级时经 Battle_SetZones 推入。
-        /// 防重叠：N+M&gt;Cols 时己方区优先、压缩敌方区。</summary>
+        /// <summary>设置三区列数 fallback（己方区左 N 列 / 敌方区右 M 列）。
+        /// 若 Scene2D 已载入每格 zone，则 IsCellIn*Zone 优先读 zone map，本值只作旧地图回退。</summary>
         public static void InitZones(int ownCols, int enemyCols)
         {
             OwnZoneCols = Mathf.Clamp(ownCols, 0, Cols);
             EnemyZoneCols = Mathf.Clamp(enemyCols, 0, Cols);
             if (OwnZoneCols + EnemyZoneCols > Cols) EnemyZoneCols = Mathf.Max(0, Cols - OwnZoneCols);
-            Debug.Log($"[GridMap] 三区 own=左{OwnZoneCols}列 enemy=右{EnemyZoneCols}列 public=中{Mathf.Max(0, Cols - OwnZoneCols - EnemyZoneCols)}列");
+            Debug.Log($"[GridMap] 三区 fallback own=左{OwnZoneCols}列 enemy=右{EnemyZoneCols}列 public=中{Mathf.Max(0, Cols - OwnZoneCols - EnemyZoneCols)}列 explicitZones={HasExplicitZones}");
         }
 
-        /// <summary>己方区：左起 OwnZoneCols 列（背包卡只能落这里）。</summary>
+        public static void SetCellZones(string[,] zones)
+        {
+            if (zones == null)
+            {
+                ClearCellZones();
+                return;
+            }
+
+            _cellZones = new string[Rows + 1, Cols + 1];
+            int own = 0, enemy = 0, pub = 0;
+            for (int r = 1; r <= Rows; r++)
+            {
+                for (int c = 1; c <= Cols; c++)
+                {
+                    string z = ZonePublic;
+                    if (r < zones.GetLength(0) && c < zones.GetLength(1))
+                        z = NormalizeZone(zones[r, c]);
+                    _cellZones[r, c] = z;
+                    if (z == ZoneOwn) own++;
+                    else if (z == ZoneEnemy) enemy++;
+                    else pub++;
+                }
+            }
+            Debug.Log($"[GridMap] Scene2D zones loaded own={own} enemy={enemy} public={pub}");
+        }
+
+        public static void ClearCellZones()
+        {
+            _cellZones = null;
+        }
+
+        public static string GetCellZone(int row, int col)
+        {
+            if (!IsCellInBounds(row, col)) return "";
+            if (_cellZones != null) return NormalizeZone(_cellZones[row, col]);
+            if (col <= OwnZoneCols) return ZoneOwn;
+            if (EnemyZoneCols > 0 && col > Cols - EnemyZoneCols) return ZoneEnemy;
+            return ZonePublic;
+        }
+
+        static string NormalizeZone(string zone)
+        {
+            if (string.IsNullOrEmpty(zone)) return ZonePublic;
+            string z = zone.Trim().ToLowerInvariant();
+            if (z == ZoneOwn || z == "player" || z == "friendly") return ZoneOwn;
+            if (z == ZoneEnemy || z == "opponent" || z == "hostile") return ZoneEnemy;
+            return ZonePublic;
+        }
+
+        /// <summary>己方区：Scene2D zone=own；旧地图 fallback 为左起 OwnZoneCols 列。</summary>
         public static bool IsCellInOwnZone(int row, int col)
-            => IsCellInBounds(row, col) && col <= OwnZoneCols;
+        {
+            if (!IsCellInBounds(row, col)) return false;
+            if (_cellZones != null) return _cellZones[row, col] == ZoneOwn;
+            return col <= OwnZoneCols;
+        }
 
-        /// <summary>敌方区：右起 EnemyZoneCols 列。</summary>
+        /// <summary>敌方区：Scene2D zone=enemy；旧地图 fallback 为右起 EnemyZoneCols 列。</summary>
         public static bool IsCellInEnemyZone(int row, int col)
-            => IsCellInBounds(row, col) && EnemyZoneCols > 0 && col > Cols - EnemyZoneCols;
+        {
+            if (!IsCellInBounds(row, col)) return false;
+            if (_cellZones != null) return _cellZones[row, col] == ZoneEnemy;
+            return EnemyZoneCols > 0 && col > Cols - EnemyZoneCols;
+        }
 
-        /// <summary>公共区：中间（非己方、非敌方）。</summary>
+        /// <summary>公共区：Scene2D zone=public；旧地图 fallback 为中间（非己方、非敌方）。</summary>
         public static bool IsCellInPublicZone(int row, int col)
             => IsCellInBounds(row, col) && !IsCellInOwnZone(row, col) && !IsCellInEnemyZone(row, col);
 

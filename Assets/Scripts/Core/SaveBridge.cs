@@ -13,7 +13,7 @@ namespace HeroDefense.Core
     /// 业务（Lua）只约定「存什么 key」，C# 只提供存取通道。
     /// 一律走字符串存储，int 在桥内自行 Parse / ToString，Lua 端无需自己转。
     ///
-    /// CLAUDE.md §6：Lua → C# 只走 LuaHost 暴露的全局函数，不裸调 CS.HeroDefense.Core.*。
+    /// AGENTS.md §6：Lua → C# 只走 LuaHost 暴露的全局函数，不裸调 CS.HeroDefense.Core.*。
     /// </summary>
 #if XLUA
     [LuaCallCSharp]
@@ -60,3 +60,4 @@ namespace HeroDefense.Core
         }
     }
 }
+
