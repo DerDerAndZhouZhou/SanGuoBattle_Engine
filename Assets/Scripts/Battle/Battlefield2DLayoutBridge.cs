@@ -146,9 +146,17 @@ namespace HeroDefense.Battle
             if (GameConfigBool("battlefield_layout_hide_scene_grid", true))
                 SetLegacyGridVisible(false);
 
+            Battlefield3DLayoutBridge.ClearRuntimeObjects();
+
             result = new BuildResult { cells = cells, zones = zones, hasZones = hasZones, found = found, path = path };
             Debug.Log($"[Battlefield2D] 已从 {path} 构建运行时网格: {found}/{GridMap.Rows * GridMap.Cols} zones={hasZones}");
             return found > 0;
+        }
+
+        public static void ClearRuntimeObjects()
+        {
+            DestroyRuntimeRoot();
+            DestroyVisualRoot();
         }
 
         public static void RestoreLegacyGridIfNeeded()
@@ -293,6 +301,15 @@ namespace HeroDefense.Battle
 
         static GameObject RecreateRuntimeRoot()
         {
+            DestroyRuntimeRoot();
+
+            var root = new GameObject(RuntimeRootName);
+            root.transform.position = Vector3.zero;
+            return root;
+        }
+
+        static void DestroyRuntimeRoot()
+        {
             var old = GameObject.Find(RuntimeRootName);
             if (old != null)
             {
@@ -301,10 +318,6 @@ namespace HeroDefense.Battle
                 if (Application.isPlaying) UnityEngine.Object.Destroy(old);
                 else UnityEngine.Object.DestroyImmediate(old);
             }
-
-            var root = new GameObject(RuntimeRootName);
-            root.transform.position = Vector3.zero;
-            return root;
         }
 
         static GameObject RecreateVisualRoot()

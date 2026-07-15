@@ -8,7 +8,7 @@ namespace HeroDefense.Battle
     /// <summary>
     /// 打击四件套静态服务：闪白 / Hit-Stop / 屏震 / 击退。
     ///
-    /// 设计原则（AGENTS.md §1.1）：
+    /// 设计原则（CLAUDE.md §1.1）：
     ///   - 表现层底层服务（不写"何时该播"业务，仅播放）
     ///   - 业务 Lua 通过 LuaHost 暴露的全局函数 HitFeedback_Play(handle, type) 调用
     ///   - 0 [SerializeField]：所有数值来自 GameConfig.txt

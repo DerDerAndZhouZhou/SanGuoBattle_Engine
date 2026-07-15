@@ -10,7 +10,7 @@ namespace HeroDefense.Battle
     ///   - 与 GridMap.CellToWorld 配套（row 越大 → worldY 越负）
     ///
     /// 性能：
-    ///   - lastY 缓存防抖（AGENTS.md R-V11）：worldY 变化 &lt; 0.01 时跳过 set
+    ///   - lastY 缓存防抖（CLAUDE.md R-V11）：worldY 变化 &lt; 0.01 时跳过 set
     ///   - 静态方法，无单例分配
     /// </summary>
     public static class GridSortingService

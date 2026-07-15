@@ -9,7 +9,7 @@ namespace HeroDefense.Battle
     /// <summary>
     /// VFX 管理器（单例 MonoBehaviour）。
     ///
-    /// 表现层底层服务（AGENTS.md §1.1）：
+    /// 表现层底层服务（CLAUDE.md §1.1）：
     ///   - 仅 Play(vfxKey, x, y, duration) / PlayOnUnit(handle, vfxKey)
     ///   - 业务 Lua 决定"何时播什么 vfx"
     ///

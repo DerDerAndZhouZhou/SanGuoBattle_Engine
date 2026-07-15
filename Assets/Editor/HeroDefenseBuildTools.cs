@@ -30,8 +30,8 @@ namespace HeroDefense.EditorTools
         private const string MENU_MEASURE_MAIN_PACKAGE = "Tools/HeroDefense/Measure Main Package";
         private const string MENU_PROFILE_FIRST_FRAME = "Tools/HeroDefense/Profile First Frame";
         private const string MENU_SELFCHECK_LOADSPRITE = "Tools/HeroDefense/Self-Check Resource_LoadSprite";
-        private const int PC_WINDOW_WIDTH = 1280;
-        private const int PC_WINDOW_HEIGHT = 720;
+        private const int PC_WINDOW_WIDTH = 720;
+        private const int PC_WINDOW_HEIGHT = 1280;
 
         private const string PHASE1_OUTPUT_DIR = "Build/Phase1";
 
@@ -161,7 +161,7 @@ namespace HeroDefense.EditorTools
         private static string ComputeMd5(string filePath)
         {
             using (var md5 = MD5.Create())
-            // FileShare.ReadWrite：WPS/Excel 开着配置表时也能算 MD5（同 ResourceHost 容错，见 AGENTS.md §10）
+            // FileShare.ReadWrite：WPS/Excel 开着配置表时也能算 MD5（同 ResourceHost 容错，见 CLAUDE.md §10）
             using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
             {
                 var bytes = md5.ComputeHash(stream);
@@ -238,8 +238,8 @@ namespace HeroDefense.EditorTools
             // PC 包热更直接读源 <repo>/Game/，先重生 manifest 保证与源同步
             RegenerateManifest(gameRoot);
 
-            // PC 内测窗口使用 16:9 手机横屏体验基准。
-            ApplyLandscapePlayerSettings();
+            // PC 内测窗口使用手机竖屏体验基准。
+            ApplyPortraitPlayerSettings();
 
             // 仓库目录约定（用户 2026-05-21）：
             //   <repo>/Build/Windows/     ← PC 编译产物（仅引擎，无 Game 副本）
@@ -282,17 +282,17 @@ namespace HeroDefense.EditorTools
             }
         }
 
-        // PC 内测窗口尺寸：1280×720（16:9 横屏）。WebGL 画布另由 defaultScreenWidthWeb/defaultScreenHeightWeb 控制。
+        // PC 内测窗口尺寸：720×1280（9:16 竖屏）。WebGL 画布另由 defaultScreenWidthWeb/defaultScreenHeightWeb 控制。
         // 背景资源仍可保持 1920×1280 美术画布，运行时按相机/Canvas 适配显示。
         // resizable / allowFullscreenSwitch 只在 Standalone 生效，WebGL 由 canvas / index.html 控制
-        private static void ApplyLandscapePlayerSettings()
+        private static void ApplyPortraitPlayerSettings()
         {
             PlayerSettings.defaultScreenWidth = PC_WINDOW_WIDTH;
             PlayerSettings.defaultScreenHeight = PC_WINDOW_HEIGHT;
             PlayerSettings.fullScreenMode = FullScreenMode.Windowed;
             PlayerSettings.resizableWindow = true;
             PlayerSettings.allowFullscreenSwitch = true;
-            Debug.Log($"[HeroDefenseBuildTools] PlayerSettings: {PC_WINDOW_WIDTH}x{PC_WINDOW_HEIGHT} (PC窗口，16:9横屏)");
+            Debug.Log($"[HeroDefenseBuildTools] PlayerSettings: {PC_WINDOW_WIDTH}x{PC_WINDOW_HEIGHT} (PC窗口，9:16竖屏)");
         }
 
         // 启动器：拉起 PowerShell tail 窗 + exe，日志走 %TEMP%\HeroDefense_output.log
@@ -543,8 +543,8 @@ namespace HeroDefense.EditorTools
             string repoRoot = GetRepoRoot();
             RegenerateManifest(gameRoot);
 
-            // 应用通用横屏窗口设置；WebGL 实际 canvas 尺寸仍读 WebGL PlayerSettings。
-            ApplyLandscapePlayerSettings();
+            // 应用通用竖屏窗口设置；WebGL 实际 canvas 尺寸仍读 WebGL PlayerSettings。
+            ApplyPortraitPlayerSettings();
 
             // 仓库目录约定：Build/Wechat/ 接受 WebGL 主包（再用 Tuanjie WeChat MiniGame 工具二次转）
             // 抖音小游戏走类似流程但输出到 Build/ByteGame/（待小游戏工具链就位单独菜单）

@@ -11,11 +11,11 @@ namespace HeroDefense.Battle
     /// <summary>
     /// Lua → C# Battle 桥（v3 design.md §4.2.1）。
     ///
-    /// 设计原则（AGENTS.md §1.1 + §6）：
+    /// 设计原则（CLAUDE.md §1.1 + §6）：
     ///   - 全 static，便于 Lua 端走 `CS.HeroDefense.Battle.BattleBridge.XXX()` 或经 LuaHost 注入的 Battle_* 全局函数
     ///   - **不写业务**（不判断"该不该 spawn"，仅执行）
     ///   - 句柄表 long → UnitView / EnemyMover / ProjectileTicker，Lua 仅持 handle
-    ///   - tuple 拆分避 xLua delegate userdata 坑（AGENTS.md §10 R-V8）：
+    ///   - tuple 拆分避 xLua delegate userdata 坑（CLAUDE.md §10 R-V8）：
     ///       Vector2 / (row,col) 返回 → 拆为 _X / _Y / _Row / _Col 多个标量函数
     ///   - SpawnUnit / DestroyUnit 同步维护 HitFeedback.RegisterHandle / UnregisterHandle（Agent E 表现层句柄表）
     ///
@@ -999,6 +999,8 @@ namespace HeroDefense.Battle
         private static Vector2 GetCampWorldPos()
         {
             Battlefield2DLayoutBridge.CampWallLayout layout;
+            if (Battlefield3DLayoutBridge.TryGetCampWallLayout("left", out layout))
+                return new Vector2(layout.x, layout.y);
             if (Battlefield2DLayoutBridge.TryGetCampWallLayout("left", out layout))
                 return new Vector2(layout.x, layout.y);
 
@@ -1632,6 +1634,17 @@ namespace HeroDefense.Battle
         {
             bool ok = GridMap.InitFromScene2DLayout();
             Battlefield2DLayoutBridge.ApplyVisuals();
+            return ok;
+        }
+
+        /// <summary>
+        /// 开发/编辑器联调用：重新从 Scene3D/2.5D 布局 XML 构建战场格子和视觉层。
+        /// 失败时不主动回退 Scene2D，便于编辑器联调直接暴露 Scene3D XML 问题。
+        /// </summary>
+        public static bool Battle_ReloadScene3DLayout()
+        {
+            bool ok = GridMap.InitFromScene3DLayout();
+            if (ok) Battlefield3DLayoutBridge.ApplyVisuals();
             return ok;
         }
 

@@ -8,7 +8,7 @@ using HeroDefense.Utils;
 namespace HeroDefense.Battle
 {
     /// <summary>
-    /// Battle 场景根 controller（三路兜底 + 防重入，AGENTS.md §10 R-V12）。
+    /// Battle 场景根 controller（三路兜底 + 防重入，CLAUDE.md §10 R-V12）。
     ///
     /// 场景 Start 在 Tuanjie 1.8.4 + MCP unfocused 状态偶发不触发 →
     /// 必须 Awake + OnEnable + Start + SceneManager.sceneLoaded 4 路兜底，
@@ -65,8 +65,10 @@ namespace HeroDefense.Battle
         {
             try
             {
-                var root = GameObject.Find("RootWindow");
-                if (root == null) { Debug.LogWarning("[BSC] RootWindow 未找到"); return; }
+                if (!Application.isPlaying) return;
+#if UNITY_EDITOR
+                if (!UnityEditor.EditorApplication.isPlaying) return;
+#endif
                 // 已迁热更 UI：旧 MainWindow / BattleHud 场景节点已于迁移收尾删除；主菜单/HUD/库存/商场全经 XML *_Open/Close 显隐
                 HeroDefense.Engine.Host.LuaHost.CallGlobal(show ? "MainMenu_Open" : "MainMenu_Close");
                 HeroDefense.Engine.Host.LuaHost.CallGlobal(show ? "BattleHud_Close" : "BattleHud_Open");
@@ -108,8 +110,11 @@ namespace HeroDefense.Battle
                 // 1. 初始化 GridMap（先读 grid.txt 参数 → 再读场景预摆的 cell 节点）
                 int gridId = ResolveGridIdForLevel(PendingLevelId);
                 GridMap.InitFromConfig(gridId);
-                if (!GridMap.InitFromScene2DLayout())
-                    GridMap.InitFromScene();
+                if (!GridMap.InitFromScene3DLayout())
+                {
+                    if (!GridMap.InitFromScene2DLayout())
+                        GridMap.InitFromScene();
+                }
 
                 // 1.5 R3a (2026-06-11)：给对局相机挂 Physics2DRaycaster —— 场上单位输入改走
                 //     EventSystem（UnitView IPointer/IDrag），无此 raycaster 场上单位收不到任何指针事件。
@@ -117,7 +122,8 @@ namespace HeroDefense.Battle
 
                 // 2. 加载场景背景 sprite（Tag=Sky_Bg / Battle_Bg；level.scene_bg_key / sky_bg_key）
                 ApplyBackgroundSprites(PendingLevelId);
-                Battlefield2DLayoutBridge.ApplyVisuals();
+                if (!Battlefield3DLayoutBridge.ApplyVisuals())
+                    Battlefield2DLayoutBridge.ApplyVisuals();
 
                 // 3. 隐藏 MainMenu UI（持久 UIWindow 切到对局 HUD 模式）
                 ToggleMainMenuUI(false);

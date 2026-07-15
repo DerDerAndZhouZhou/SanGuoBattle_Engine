@@ -5,7 +5,7 @@ using HeroDefense.Config;
 namespace HeroDefense.Battle
 {
     /// <summary>
-    /// 网格坐标系唯一映射点（AGENTS.md §10 R-V9 / R-V13 / R-13）。
+    /// 网格坐标系唯一映射点（CLAUDE.md §10 R-V9 / R-V13 / R-13）。
     ///
     /// 设计约束：
     ///   - 8×12 网格（v4 2026-05-14 用户拍板，原 v3 是 8×14）
@@ -309,6 +309,39 @@ namespace HeroDefense.Battle
                 ClearCellZones();
                 _latticeValid = false;
                 Battlefield2DLayoutBridge.RestoreLegacyGridIfNeeded();
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 从 Game/ui/scene3d 导出的 2.5D 战场布局构建运行时 CellView。
+        /// 成功后玩法层仍使用 row/col 与 Unity world XY，Scene3D 只负责视觉和可编辑布局。
+        /// </summary>
+        public static bool InitFromScene3DLayout()
+        {
+            try
+            {
+                Battlefield3DLayoutBridge.BuildResult result;
+                if (!Battlefield3DLayoutBridge.TryBuildGrid(out result))
+                {
+                    ClearCellZones();
+                    return false;
+                }
+
+                Cells = result.cells;
+                if (result.hasZones) SetCellZones(result.zones);
+                else ClearCellZones();
+                Debug.Log($"[GridMap] InitFromScene3DLayout: {result.path} 加载 {result.found} 个 tile 节点");
+                ComputeLattice();
+                return result.found > 0;
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[GridMap] InitFromScene3DLayout 异常: {e.Message}");
+                Cells = null;
+                ClearCellZones();
+                _latticeValid = false;
+                Battlefield3DLayoutBridge.RestoreLegacyGridIfNeeded();
                 return false;
             }
         }

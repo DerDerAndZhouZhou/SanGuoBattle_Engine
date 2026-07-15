@@ -7,7 +7,7 @@ namespace HeroDefense.SDK
     /// <summary>
     /// 触觉震动桥（抖音 / 微信 / 默认）。
     ///
-    /// 表现层底层服务（AGENTS.md §1.1）：
+    /// 表现层底层服务（CLAUDE.md §1.1）：
     ///   - 不写"何时震"业务，仅按 ms 触发一次振动
     ///   - 业务 Lua 通过 LuaHost 暴露的 Device_Vibrate(ms) 调用
     ///

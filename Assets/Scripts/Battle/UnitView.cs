@@ -13,7 +13,7 @@ namespace HeroDefense.Battle
     /// <summary>
     /// 单位视图（兵种 / 武将 / 建筑 / 怪 通用）。
     ///
-    /// 设计原则（AGENTS.md §1）：
+    /// 设计原则（CLAUDE.md §1）：
     ///   - 0 SerializeField — 用 UIFinder 子节点查找 hp_bar / shadow / sprite_root
     ///   - **不存业务数据**（不存 hp/atk/lv 数值 — 那是 Lua 的）
     ///   - 持 long Handle（BattleBridge 句柄表 key），业务 Lua 通过 handle 操作

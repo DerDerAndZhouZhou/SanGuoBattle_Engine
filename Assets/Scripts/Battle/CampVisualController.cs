@@ -117,9 +117,9 @@ namespace HeroDefense.Battle
             _rightPlacement = BuildDefaultPlacement(metrics, true, transform.position.z);
 
             Battlefield2DLayoutBridge.CampWallLayout xml;
-            if (Battlefield2DLayoutBridge.TryGetCampWallLayout("left", out xml))
+            if (Battlefield3DLayoutBridge.TryGetCampWallLayout("left", out xml) || Battlefield2DLayoutBridge.TryGetCampWallLayout("left", out xml))
                 ApplyXmlLayout(ref _leftPlacement, xml);
-            if (Battlefield2DLayoutBridge.TryGetCampWallLayout("right", out xml))
+            if (Battlefield3DLayoutBridge.TryGetCampWallLayout("right", out xml) || Battlefield2DLayoutBridge.TryGetCampWallLayout("right", out xml))
                 ApplyXmlLayout(ref _rightPlacement, xml);
 
             _leftBaseX = _leftPlacement.x;

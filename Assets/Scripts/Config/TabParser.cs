@@ -142,7 +142,7 @@ namespace HeroDefense.Config
 
         // CSV/spreadsheet 反引号容错（2026-06-07）：WPS/Excel 保存 tab 文件会把含逗号的字段
         //（json 如 [[9,1,0,0]] / 数组如 100,101,120,121）整体用双引号包裹、内部 " 翻倍成 ""。
-        // json / 数组类型解析前剥掉外层引号 + 还原 "" → "，否则 formula_list 等门控解析为 nil → 全失效（见 AGENTS.md §10）。
+        // json / 数组类型解析前剥掉外层引号 + 还原 "" → "，否则 formula_list 等门控解析为 nil → 全失效（见 CLAUDE.md §10）。
         private static string Dequote(string s)
         {
             if (s != null && s.Length >= 2 && s[0] == '"' && s[s.Length - 1] == '"')

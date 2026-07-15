@@ -8,7 +8,7 @@ namespace HeroDefense.Battle
     /// <summary>
     /// 怪物 waypoint 跟随器（性能热路径）。
     ///
-    /// 设计原则（AGENTS.md §1）：
+    /// 设计原则（CLAUDE.md §1）：
     ///   - C# 负责"每帧位移"性能热路径，避免 Lua 每帧 tick 200 单位
     ///   - 业务（什么时候 spawn / 死亡 / 元素克制）由 Lua 决定
     ///   - 到达营帐 / 路点切换 → 调 Lua 全局函数 Battle_OnEnemyReachCamp

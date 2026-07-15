@@ -53,7 +53,7 @@ namespace HeroDefense.Engine.Host
             // ============ 表现层桥接（Agent E / Step 6.5） ============
             // 5 个全局函数封装 HitFeedback / DamageNumberManager / VFXManager / HapticBridge
             // 业务 Lua 走 feedback_manager.lua 门面（Feedback_Hit / Feedback_DamageNumber / ...）
-            // xLua delegate userdata 坑（AGENTS.md §6）：Lua 端用 `fn ~= nil`，不要 `if fn then`
+            // xLua delegate userdata 坑（CLAUDE.md §6）：Lua 端用 `fn ~= nil`，不要 `if fn then`
             DamageNumberManager.EnsureInstance();
             VFXManager.EnsureInstance();
             _env.Global.Set("HitFeedback_Play",  (System.Action<long, int>)               HitFeedback.Play);
@@ -69,7 +69,7 @@ namespace HeroDefense.Engine.Host
 
             // ============ Battle 桥接（Agent C / Step 2-5） ============
             // 18+ 个 Battle_* 全局函数，避开 Agent E 上面 5 个表现层 hook。
-            // tuple 返回 → 拆为 X/Y/Row/Col 多个标量函数（避 xLua delegate userdata 坑 AGENTS.md R-V8）。
+            // tuple 返回 → 拆为 X/Y/Row/Col 多个标量函数（避 xLua delegate userdata 坑 CLAUDE.md R-V8）。
             // Lua 端调用：直接 `Battle_SpawnUnit(...)`（全局）或 `CS.HeroDefense.Battle.BattleBridge.XXX(...)`（class）。
             // 单位 5
             _env.Global.Set("Battle_SpawnUnit",       (System.Func<int, int, int, long>)         BattleBridge.Battle_SpawnUnit);
@@ -141,6 +141,7 @@ namespace HeroDefense.Engine.Host
             // T202 (2026-05-21) — 玩法模式 grid 视觉样式（R1d 保留；解锁动画桥已删）
             _env.Global.Set("Battle_SetGridVisualStyle",   (System.Action<string>)               BattleBridge.Battle_SetGridVisualStyle);
             _env.Global.Set("Battle_ReloadScene2DLayout",  (System.Func<bool>)                    BattleBridge.Battle_ReloadScene2DLayout);
+            _env.Global.Set("Battle_ReloadScene3DLayout",  (System.Func<bool>)                    BattleBridge.Battle_ReloadScene3DLayout);
             // T203 (2026-05-21) — 单位头顶血量条可见性（拖拽时隐藏 / 落地恢复）
             _env.Global.Set("Battle_SetUnitHpBarVisible",  (System.Action<long, bool>)           BattleBridge.Battle_SetUnitHpBarVisible);
             // 排序 1
@@ -151,7 +152,7 @@ namespace HeroDefense.Engine.Host
 
             // ============ 存档桥（核心循环 P0-2 / P0-3） ============
             // 通用 KV 存取 + 货币入库。业务（Lua）约定 key，C# 只提供存取通道。
-            // xLua delegate userdata 坑（AGENTS.md §6）：Lua 端用 `fn ~= nil`，不要 `if fn then`
+            // xLua delegate userdata 坑（CLAUDE.md §6）：Lua 端用 `fn ~= nil`，不要 `if fn then`
             _env.Global.Set("Save_GetInt",    (System.Func<string, int, int>)        SaveBridge.GetInt);
             _env.Global.Set("Save_SetInt",    (System.Action<string, int>)           SaveBridge.SetInt);
             _env.Global.Set("Save_GetString", (System.Func<string, string, string>)  SaveBridge.GetString);
