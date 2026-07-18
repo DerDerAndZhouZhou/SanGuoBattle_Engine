@@ -183,14 +183,29 @@ namespace HeroDefense.Engine.Host
         /// 配置表的 sprite_key 字段建议存不带后缀的相对路径前缀（如 "grid/cell_unlocked"），
         /// 业务代码补成 "resources/art/{key}.png" 后调用本方法。
         /// </summary>
-        public static Sprite LoadSprite(string relPath) => LoadSprite(relPath, true);
+        public static Sprite LoadSprite(string relPath) => LoadSpriteInternal(relPath, true, Vector4.zero, false);
 
         /// <summary>logMissing=false：文件缺失时静默返回 null（多扩展名回落探测用，不算错误）。
         /// 2026-05-29 (Q3) 改造：先查 atlas 索引，命中切子矩形；未命中走旧单 PNG 路径。</summary>
-        public static Sprite LoadSprite(string relPath, bool logMissing)
+        public static Sprite LoadSprite(string relPath, bool logMissing) =>
+            LoadSpriteInternal(relPath, logMissing, Vector4.zero, false);
+
+        /// <summary>
+        /// 按指定九宫 border 加载 Sprite。border 顺序遵循 Unity Vector4：L,B,R,T；
+        /// 显式 border 变体使用独立缓存键，不与旧无 border Sprite 混用。
+        /// </summary>
+        public static Sprite LoadSprite(string relPath, Vector4 border) =>
+            LoadSpriteInternal(relPath, true, border, true);
+
+        /// <summary>带 border 的静默/告警可选加载重载。</summary>
+        public static Sprite LoadSprite(string relPath, bool logMissing, Vector4 border) =>
+            LoadSpriteInternal(relPath, logMissing, border, true);
+
+        private static Sprite LoadSpriteInternal(string relPath, bool logMissing, Vector4 border, bool useBorderVariant)
         {
             if (string.IsNullOrEmpty(relPath)) return null;
-            if (_spriteCache.TryGetValue(relPath, out var cached) && cached != null) return cached;
+            string cacheKey = useBorderVariant ? BuildBorderSpriteCacheKey(relPath, border) : relPath;
+            if (_spriteCache.TryGetValue(cacheKey, out var cached) && cached != null) return cached;
 
             // ★ atlas 优先路径
             if (_atlasIndex.TryGetValue(relPath, out var entry))
@@ -200,11 +215,12 @@ namespace HeroDefense.Engine.Host
                 {
                     // Unity 的 Rect.y 从底部起算；atlas XML 的 y 从顶部起算 → 翻转
                     float unityY = atlasTex.height - entry.Y - entry.H;
-                    var sub = Sprite.Create(atlasTex,
-                        new Rect(entry.X, unityY, entry.W, entry.H),
-                        new Vector2(entry.PivotX, entry.PivotY),
-                        DEFAULT_PIXELS_PER_UNIT);
-                    _spriteCache[relPath] = sub;
+                    Rect rect = new Rect(entry.X, unityY, entry.W, entry.H);
+                    Vector2 pivot = new Vector2(entry.PivotX, entry.PivotY);
+                    var sub = useBorderVariant
+                        ? Sprite.Create(atlasTex, rect, pivot, DEFAULT_PIXELS_PER_UNIT, 0, SpriteMeshType.FullRect, border)
+                        : Sprite.Create(atlasTex, rect, pivot, DEFAULT_PIXELS_PER_UNIT);
+                    _spriteCache[cacheKey] = sub;
                     return sub;
                 }
                 // atlas 纹理加载失败 → 兜底走旧单 PNG（写日志但不退出）
@@ -227,12 +243,23 @@ namespace HeroDefense.Engine.Host
                 Debug.LogWarning($"[ResourceHost] LoadSprite 解码失败: {relPath}");
                 return null;
             }
-            var sprite = Sprite.Create(tex,
-                new Rect(0, 0, tex.width, tex.height),
-                new Vector2(0.5f, 0.5f),
-                DEFAULT_PIXELS_PER_UNIT);
-            _spriteCache[relPath] = sprite;
+            Rect fullRect = new Rect(0, 0, tex.width, tex.height);
+            Vector2 centerPivot = new Vector2(0.5f, 0.5f);
+            var sprite = useBorderVariant
+                ? Sprite.Create(tex, fullRect, centerPivot, DEFAULT_PIXELS_PER_UNIT, 0, SpriteMeshType.FullRect, border)
+                : Sprite.Create(tex, fullRect, centerPivot, DEFAULT_PIXELS_PER_UNIT);
+            _spriteCache[cacheKey] = sprite;
             return sprite;
+        }
+
+        private static string BuildBorderSpriteCacheKey(string relPath, Vector4 border)
+        {
+            var culture = System.Globalization.CultureInfo.InvariantCulture;
+            return relPath + "|border:" +
+                border.x.ToString("R", culture) + "," +
+                border.y.ToString("R", culture) + "," +
+                border.z.ToString("R", culture) + "," +
+                border.w.ToString("R", culture);
         }
 
         /// <summary>清空 sprite 缓存（场景切换时可手动调用，避免内存增长）。同时清 atlas 纹理缓存。</summary>

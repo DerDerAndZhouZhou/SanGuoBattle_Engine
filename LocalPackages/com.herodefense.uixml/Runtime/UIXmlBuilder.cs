@@ -19,6 +19,9 @@ namespace HeroDefense.UI.Xml
         /// <summary>按 sprite key 取图；缺失返回 null（builder 会用纯白兜底图 + color 渲染）。</summary>
         Sprite LoadSprite(string spriteKey);
 
+        /// <summary>按 sprite key 与 Unity border(L,B,R,T) 取九宫 Sprite；缺失返回 null。</summary>
+        Sprite LoadSprite(string spriteKey, Vector4 border);
+
         /// <summary>文本控件用的字体。</summary>
         Font GetFont();
 
@@ -350,7 +353,20 @@ namespace HeroDefense.UI.Xml
         {
             if (img == null) return;
             string spriteKey = Attr(elem, "sprite");
-            Sprite s = string.IsNullOrEmpty(spriteKey) ? null : (_host != null ? _host.LoadSprite(spriteKey) : null);
+            string fillStr = Attr(elem, "fill");
+            string imageType = (Attr(elem, "imageType") ?? "").Trim().ToLowerInvariant();
+            bool useBorderVariant = string.IsNullOrEmpty(fillStr) && (imageType == "sliced" || imageType == "tiled");
+            Vector4 xmlBorder = ParseVec4(Attr(elem, "border"), Vector4.zero); // XML: L,T,R,B
+            Vector4 unityBorder = new Vector4(
+                Mathf.Max(0f, xmlBorder.x),
+                Mathf.Max(0f, xmlBorder.w),
+                Mathf.Max(0f, xmlBorder.z),
+                Mathf.Max(0f, xmlBorder.y)); // Unity: L,B,R,T
+            Sprite s = null;
+            if (!string.IsNullOrEmpty(spriteKey) && _host != null)
+            {
+                s = useBorderVariant ? _host.LoadSprite(spriteKey, unityBorder) : _host.LoadSprite(spriteKey);
+            }
             img.sprite = s != null ? s : WhiteSprite();
 
             // 缺图时用纯白兜底，靠 color 显示为纯色块（PoC 默认走这条）
@@ -359,13 +375,20 @@ namespace HeroDefense.UI.Xml
             else img.color = Color.white;
 
             // fill：把 Image 当进度/填充条（exp/loading/血条），值 0~1
-            string fillStr = Attr(elem, "fill");
             if (!string.IsNullOrEmpty(fillStr))
             {
                 img.type = Image.Type.Filled;
                 img.fillMethod = ParseFillMethod(Attr(elem, "fillMethod"));
                 img.fillAmount = Mathf.Clamp01(ParseF(fillStr, 1f));
                 img.fillOrigin = (int)ParseF(Attr(elem, "fillOrigin"), 0f);
+            }
+            else if (imageType == "sliced")
+            {
+                img.type = Image.Type.Sliced;
+            }
+            else if (imageType == "tiled")
+            {
+                img.type = Image.Type.Tiled;
             }
             else
             {
