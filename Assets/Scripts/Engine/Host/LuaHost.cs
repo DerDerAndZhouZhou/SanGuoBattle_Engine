@@ -112,6 +112,7 @@ namespace HeroDefense.Engine.Host
             _env.Global.Set("Battle_SpawnProjectileLineStop", (System.Func<long, float, float, float, float, string, float, long>) BattleBridge.Battle_SpawnProjectileLineStop);
             // 网格 1
             _env.Global.Set("Battle_SetCellHighlight",(System.Action<int, int, int>)             BattleBridge.Battle_SetCellHighlight);
+            _env.Global.Set("Battle_SetTileTint",     (System.Action<int, int, string>)          Battlefield3DLayoutBridge.Battle_SetTileTint);
             // 坐标 4 拆分（tuple 拆分避 xLua delegate userdata 坑）
             _env.Global.Set("Battle_CellToWorldX",    (System.Func<int, int, float>)             BattleBridge.Battle_CellToWorldX);
             _env.Global.Set("Battle_CellToWorldY",    (System.Func<int, int, float>)             BattleBridge.Battle_CellToWorldY);

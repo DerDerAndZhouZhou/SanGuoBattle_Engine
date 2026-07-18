@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using HeroDefense.Config;
 using HeroDefense.Utils;
+using Newtonsoft.Json;
 #if XLUA
 using XLua;
 #endif
@@ -459,6 +460,305 @@ namespace HeroDefense.Battle
         private static readonly Dictionary<string, Sprite[]> _animFrameCache = new Dictionary<string, Sprite[]>();
         private const int ANIM_MAX_FRAMES = 16;  // 2026-05-29 (Q2): 单个 state 探测上限 16 帧（GetAnimFrames 是 per-state 调用：idle 一次、attack 一次...）。实际帧数仍按文件自动检测（首个缺失帧停止），美术 8 帧就播 8 帧，16 帧就播 16 帧。一个角色 6 状态总帧数上限 96
 
+        // anim json v1：仅描述扁平帧，按 base key 进程内缓存。null 值同时缓存“文件不存在/文件无效”，
+        // 避免每次播放重复触碰热更文件系统；进程重启后自然重读。
+        private sealed class AnimJsonDefinition
+        {
+            [JsonProperty("version", Required = Required.Always)] public int Version { get; set; }
+            [JsonProperty("base_key", Required = Required.Always)] public string BaseKey { get; set; }
+            [JsonProperty("states", Required = Required.Always)] public Dictionary<string, AnimJsonState> States { get; set; }
+        }
+
+        private sealed class AnimJsonState
+        {
+            [JsonProperty("loop", Required = Required.Always)] public bool Loop { get; set; }
+            [JsonProperty("frames", Required = Required.Always)] public List<AnimJsonFrame> Frames { get; set; }
+            [JsonProperty("events")] public List<AnimJsonEvent> Events { get; set; }
+        }
+
+        private sealed class AnimJsonFrame
+        {
+            [JsonProperty("img", Required = Required.Always)] public int Img { get; set; }
+            [JsonProperty("dur", Required = Required.Always)] public float Dur { get; set; }
+        }
+
+        private sealed class AnimJsonEvent
+        {
+            [JsonProperty("frame", Required = Required.Always)] public int Frame { get; set; }
+            [JsonProperty("name", Required = Required.Always)] public string Name { get; set; }
+        }
+
+        private sealed class TimedAnimClip
+        {
+            public Sprite[] Frames;
+            public float[] Durations;
+            public bool Looping;
+            public List<AnimJsonEvent> Events;
+            public float RawDurationTotal;
+            public float SpeedMultiplier;
+        }
+
+        private static readonly Dictionary<string, AnimJsonDefinition> _animJsonCache =
+            new Dictionary<string, AnimJsonDefinition>();
+
+        private static string NormalizeAnimBaseKey(string baseKey)
+        {
+            return string.IsNullOrEmpty(baseKey) ? string.Empty : baseKey.Replace('\\', '/').Trim('/');
+        }
+
+        private static string AnimJsonPath(string normalizedBaseKey)
+        {
+            int slash = normalizedBaseKey.LastIndexOf('/');
+            string dir = slash >= 0 ? normalizedBaseKey.Substring(0, slash + 1) : string.Empty;
+            string leaf = slash >= 0 ? normalizedBaseKey.Substring(slash + 1) : normalizedBaseKey;
+            return $"resources/art/{dir}{leaf}.anim.json";
+        }
+
+        private static AnimJsonDefinition GetAnimJson(string baseKey)
+        {
+            string normalized = NormalizeAnimBaseKey(baseKey);
+            if (string.IsNullOrEmpty(normalized)) return null;
+            if (_animJsonCache.TryGetValue(normalized, out var cached)) return cached;
+
+            string path = AnimJsonPath(normalized);
+            try
+            {
+                if (!HeroDefense.Engine.Host.ResourceHost.Exists(path))
+                {
+                    _animJsonCache[normalized] = null; // 缺文件是正常旧路径，静默缓存。
+                    return null;
+                }
+
+                string json = HeroDefense.Engine.Host.ResourceHost.ReadText(path);
+                if (string.IsNullOrWhiteSpace(json))
+                    return CacheInvalidAnimJson(normalized, path, "文件为空");
+
+                var definition = JsonConvert.DeserializeObject<AnimJsonDefinition>(json);
+                if (!ValidateAnimJson(definition, normalized, out string reason))
+                    return CacheInvalidAnimJson(normalized, path, reason);
+
+                _animJsonCache[normalized] = definition;
+                return definition;
+            }
+            catch (System.Exception e)
+            {
+                return CacheInvalidAnimJson(normalized, path, e.Message);
+            }
+        }
+
+        private static AnimJsonDefinition CacheInvalidAnimJson(string normalizedBaseKey, string path, string reason)
+        {
+            _animJsonCache[normalizedBaseKey] = null;
+            Debug.LogWarning($"[BattleBridge] anim json 无效，整文件回落均摊（{path}）：{reason}");
+            return null;
+        }
+
+        private static bool ValidateAnimJson(AnimJsonDefinition definition, string expectedBaseKey, out string reason)
+        {
+            if (definition == null)
+            {
+                reason = "根对象为空";
+                return false;
+            }
+            if (definition.Version != 1)
+            {
+                reason = $"version 必须为 1，实际 {definition.Version}";
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(definition.BaseKey)
+                || NormalizeAnimBaseKey(definition.BaseKey) != expectedBaseKey)
+            {
+                reason = $"base_key 必须精确匹配 {expectedBaseKey}";
+                return false;
+            }
+            if (definition.States == null || definition.States.Count == 0)
+            {
+                reason = "states 缺失或为空";
+                return false;
+            }
+
+            foreach (var pair in definition.States)
+            {
+                string stateName = pair.Key;
+                var state = pair.Value;
+                if (string.IsNullOrWhiteSpace(stateName) || state == null)
+                {
+                    reason = "state 名为空或 state 对象为空";
+                    return false;
+                }
+                if (state.Frames == null || state.Frames.Count == 0)
+                {
+                    reason = $"state '{stateName}' 的 frames 缺失或为空";
+                    return false;
+                }
+                for (int i = 0; i < state.Frames.Count; i++)
+                {
+                    var frame = state.Frames[i];
+                    if (frame == null || frame.Img < 0)
+                    {
+                        reason = $"state '{stateName}' frame[{i}].img 非法";
+                        return false;
+                    }
+                    if (frame.Dur <= 0f || float.IsNaN(frame.Dur) || float.IsInfinity(frame.Dur))
+                    {
+                        reason = $"state '{stateName}' frame[{i}].dur 必须为有限正数";
+                        return false;
+                    }
+                }
+                if (state.Events == null) continue;
+                for (int i = 0; i < state.Events.Count; i++)
+                {
+                    var frameEvent = state.Events[i];
+                    if (frameEvent == null || frameEvent.Frame < 0 || frameEvent.Frame >= state.Frames.Count)
+                    {
+                        reason = $"state '{stateName}' event[{i}].frame 越界";
+                        return false;
+                    }
+                    if (string.IsNullOrWhiteSpace(frameEvent.Name))
+                    {
+                        reason = $"state '{stateName}' event[{i}].name 为空";
+                        return false;
+                    }
+                }
+            }
+
+            reason = null;
+            return true;
+        }
+
+        private static bool TryGetFrameStorage(string baseKey, string state, out bool usesAtlas)
+        {
+            var atlas = HeroDefense.Engine.Host.LuaHost.LoadSprite(
+                $"resources/art/{baseKey}/atlas/{state}_0.png", false);
+            if (atlas != null)
+            {
+                usesAtlas = true;
+                return true;
+            }
+            var flat = HeroDefense.Engine.Host.LuaHost.LoadSprite(
+                $"resources/art/{baseKey}_{state}_0.png", false);
+            usesAtlas = false;
+            return flat != null;
+        }
+
+        // 与 ResolveAnimFrames 的 direct → 基础方向态 → idle 回退顺序一致；任一级命中 atlas
+        // （即使同名扁平帧也并存）都沿用旧 atlas 优先路径，不查 json。
+        private static bool ResolvesToAtlasFrames(string baseKey, string state)
+        {
+            if (TryGetFrameStorage(baseKey, state, out bool usesAtlas)) return usesAtlas;
+            string baseState = StripDirSuffix(state);
+            if (baseState != state && TryGetFrameStorage(baseKey, baseState, out usesAtlas)) return usesAtlas;
+            if (state != "idle" && TryGetFrameStorage(baseKey, "idle", out usesAtlas)) return usesAtlas;
+            return false;
+        }
+
+        private static float NormalizeTimedSpeed(float speedMult)
+        {
+            return speedMult > 0f && !float.IsNaN(speedMult) && !float.IsInfinity(speedMult)
+                ? speedMult
+                : 1f;
+        }
+
+        private static bool TryBuildTimedClip(string baseKey, string stateName, float speedMult,
+            out TimedAnimClip clip)
+        {
+            clip = null;
+            string normalized = NormalizeAnimBaseKey(baseKey);
+            if (string.IsNullOrEmpty(normalized) || string.IsNullOrEmpty(stateName)) return false;
+            if (ResolvesToAtlasFrames(normalized, stateName)) return false;
+
+            var definition = GetAnimJson(normalized);
+            if (definition == null || !definition.States.TryGetValue(stateName, out var state))
+                return false; // state 严格命中：不继承方向基础态，也不继承 idle。
+
+            int count = state.Frames.Count;
+            var frames = new Sprite[count];
+            var rawDurations = new float[count];
+            double rawTotal = 0d;
+            for (int i = 0; i < count; i++)
+            {
+                var entry = state.Frames[i];
+                frames[i] = HeroDefense.Engine.Host.LuaHost.LoadSprite(
+                    $"resources/art/{normalized}_{stateName}_{entry.Img}.png", false);
+                if (frames[i] == null)
+                {
+                    CacheInvalidAnimJson(normalized, AnimJsonPath(normalized),
+                        $"state '{stateName}' frame[{i}] 引用的 img={entry.Img} 不存在");
+                    return false;
+                }
+                rawDurations[i] = entry.Dur;
+                rawTotal += entry.Dur;
+            }
+            if (rawTotal <= 0d || rawTotal > float.MaxValue || double.IsNaN(rawTotal) || double.IsInfinity(rawTotal))
+            {
+                CacheInvalidAnimJson(normalized, AnimJsonPath(normalized),
+                    $"state '{stateName}' 总时长非法");
+                return false;
+            }
+
+            float mult = NormalizeTimedSpeed(speedMult);
+            var durations = new float[count];
+            bool scaledValid = true;
+            for (int i = 0; i < count; i++)
+            {
+                double scaled = (double)rawDurations[i] / mult;
+                if (scaled <= 0d || scaled > float.MaxValue || double.IsNaN(scaled) || double.IsInfinity(scaled))
+                {
+                    scaledValid = false;
+                    break;
+                }
+                durations[i] = (float)scaled;
+            }
+            if (!scaledValid)
+            {
+                // 极端但为正的倍率导致 float 溢出时按旧兼容语义视为 1，避免播放器收到非法时长。
+                mult = 1f;
+                for (int i = 0; i < count; i++) durations[i] = rawDurations[i];
+            }
+
+            clip = new TimedAnimClip
+            {
+                Frames = frames,
+                Durations = durations,
+                Looping = state.Loop,
+                Events = state.Events,
+                RawDurationTotal = (float)rawTotal,
+                SpeedMultiplier = mult,
+            };
+            return true;
+        }
+
+        private static bool TryPlayTimedAnim(long handle, SpriteAnimator anim, string stateName, float speedMult)
+        {
+            if (!TryBuildTimedClip(anim.SpriteBaseKey, stateName, speedMult, out var clip)) return false;
+
+            System.Action<int> onFrameEnter = null;
+            if (clip.Events != null && clip.Events.Count > 0)
+            {
+                onFrameEnter = frameIndex =>
+                {
+                    for (int i = 0; i < clip.Events.Count; i++)
+                    {
+                        var frameEvent = clip.Events[i];
+                        if (frameEvent.Frame == frameIndex)
+                        {
+                            HeroDefense.Engine.Host.LuaHost.CallGlobal(
+                                "Anim_OnFrameEvent", handle, stateName, frameEvent.Name);
+                        }
+                    }
+                };
+            }
+
+            anim.PlayTimed(stateName, clip.Frames, clip.Durations, clip.Looping, onFrameEnter);
+            return true;
+        }
+
+        private static void RefreshAnimLayout(long handle)
+        {
+            if (_units.TryGetValue(handle, out var uv) && uv != null) uv.FitSpriteToBlock();
+            else FitEnemyToCell(handle);
+        }
+
         /// <summary>按文件实际存在探测并加载某 (baseKey,state) 的全部帧；结果缓存。</summary>
         // ============ 2026-05-29 (Q1) — Spine 动画 stub ============
         // 当前未集成 spine-unity SDK，先打 warning（只警告一次/handle）并 fall back 到 frame 路径。
@@ -469,26 +769,32 @@ namespace HeroDefense.Battle
         //   3. spawn 时按 sprite_key 加载 SkeletonDataAsset（spine-unity 4.x 支持 runtime byte[] 解析）
         //   4. 此处调 skel.AnimationState.SetAnimation(0, stateName, loop) 即可
         private static readonly HashSet<long> _spineWarnedHandles = new HashSet<long>();
-        private static void PlayAnim_Spine(SpriteAnimator anim, string stateName)
+        private static void PlayAnim_Spine(long handle, SpriteAnimator anim, string stateName, float speedMult)
         {
-            long h = 0;
-            // 找 handle（用于去重 warning）— 不影响功能
+            long warningHandle = 0;
+            // 保持旧 stub 日志去重：unit 按自身 handle，enemy 因无 UnitView 继续共用 0。
             if (anim != null && anim.gameObject != null)
             {
                 var view = anim.gameObject.GetComponent<UnitView>();
-                if (view != null) h = view.Handle;
+                if (view != null) warningHandle = view.Handle;
             }
-            if (!_spineWarnedHandles.Contains(h))
+            if (!_spineWarnedHandles.Contains(warningHandle))
             {
-                _spineWarnedHandles.Add(h);
+                _spineWarnedHandles.Add(warningHandle);
                 Debug.LogWarning($"[BattleBridge] anim_type=atSpine 配置但 spine-unity SDK 未集成 → 兜底走 frame 路径（key={anim.SpriteBaseKey}, state={stateName}）");
             }
-            // fallback：走 frame 路径（与下方相同逻辑）
+            // stub fallback 与 atFrame 一致先尝试逐帧时长；无可用 timed clip 才走旧均摊路径。
+            if (TryPlayTimedAnim(handle, anim, stateName, speedMult))
+            {
+                RefreshAnimLayout(handle);
+                return;
+            }
             var frames = ResolveAnimFrames(anim.SpriteBaseKey, stateName);
             if (frames.Length == 0) return;
             bool looping = IsLoopingState(stateName);
             anim.Play(stateName, frames, fps: AnimFpsFor(stateName), looping: looping);
-            if (_units.TryGetValue(h, out var uv) && uv != null) uv.FitSpriteToBlock();
+            // uniform fallback 保持旧行为：仅 unit 做 Fit；enemy 不新增布局副作用。
+            if (_units.TryGetValue(warningHandle, out var uv) && uv != null) uv.FitSpriteToBlock();
         }
 
         // 动画播放帧率（配置驱动，按状态分级；越小动作越慢）。2026-06-07
@@ -705,7 +1011,13 @@ namespace HeroDefense.Battle
             // 2026-05-29 (Q1) — 按 AnimType 分发：spine 走 stub（log + fallback 到 frame）；frame 走原路径
             if (anim.AnimType == "atSpine")
             {
-                PlayAnim_Spine(anim, stateName);
+                PlayAnim_Spine(handle, anim, stateName, speedMult);
+                return;
+            }
+
+            if (TryPlayTimedAnim(handle, anim, stateName, speedMult))
+            {
+                RefreshAnimLayout(handle);
                 return;
             }
 
@@ -717,8 +1029,7 @@ namespace HeroDefense.Battle
             anim.Play(stateName, frames, fps: ScaledFps(stateName, speedMult), looping: looping);  // fps 随攻速倍率缩放(整数取整)
 
             // Play 已把首帧设到 SpriteRenderer，按 footprint 脚底锚定；友军单位尺寸对齐拖拽 UI ghost。
-            if (_units.TryGetValue(handle, out var uv) && uv != null) uv.FitSpriteToBlock();
-            else FitEnemyToCell(handle);   // 切态复用 idle 身体基准缩放(不重算→身体不缩·兵器溢出)
+            RefreshAnimLayout(handle);   // 切态复用 idle 身体基准缩放(不重算→身体不缩·兵器溢出)
         }
 
         // v2 批 1b（2026-06-14）C#④：取某单位/怪某动画状态在给定攻速倍率下的播放时长（秒）。
@@ -729,6 +1040,8 @@ namespace HeroDefense.Battle
         {
             var anim = GetAnimator(handle);
             if (anim == null || string.IsNullOrEmpty(anim.SpriteBaseKey)) return 0f;
+            if (TryBuildTimedClip(anim.SpriteBaseKey, state, speedMult, out var timed))
+                return timed.RawDurationTotal / timed.SpeedMultiplier;
             var frames = ResolveAnimFrames(anim.SpriteBaseKey, state);
             int n = frames != null ? frames.Length : 0;
             float fps = ScaledFps(state, speedMult);

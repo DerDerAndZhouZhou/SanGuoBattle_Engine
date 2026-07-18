@@ -27,6 +27,11 @@ namespace HeroDefense.UI.Xml
                 return LoadSpriteFlexible(spriteKey);
             }
 
+            public Sprite LoadSprite(string spriteKey, Vector4 border)
+            {
+                return LoadSpriteFlexible(spriteKey, border);
+            }
+
             public Font GetFont()
             {
                 return Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
@@ -66,6 +71,16 @@ namespace HeroDefense.UI.Xml
             if (key.Contains(".")) return ResourceHost.LoadSprite(key, false);
             var sp = ResourceHost.LoadSprite(key + ".png", false);
             if (sp == null) sp = ResourceHost.LoadSprite(key + ".jpg", false);
+            return sp;
+        }
+
+        static Sprite LoadSpriteFlexible(string spriteKey, Vector4 border)
+        {
+            string key = NormalizeSpriteBase(spriteKey);
+            if (string.IsNullOrEmpty(key)) return null;
+            if (key.Contains(".")) return ResourceHost.LoadSprite(key, false, border);
+            var sp = ResourceHost.LoadSprite(key + ".png", false, border);
+            if (sp == null) sp = ResourceHost.LoadSprite(key + ".jpg", false, border);
             return sp;
         }
 

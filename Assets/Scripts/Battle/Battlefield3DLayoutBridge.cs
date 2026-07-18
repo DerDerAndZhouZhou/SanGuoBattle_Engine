@@ -18,7 +18,10 @@ namespace HeroDefense.Battle
         public const string DefaultLayoutPath = "ui/scene3d/gamescene.xml";
         private const string RuntimeRootName = "__Battlefield3D_RuntimeGrid";
         private const string RuntimeVisualRootName = "__Battlefield3D_RuntimeVisuals";
+        private const float TileSpriteTopCenterFromTop = 0.42f;
         private static readonly Dictionary<string, Sprite> TileSpriteCache = new Dictionary<string, Sprite>();
+        private static readonly Dictionary<int, RuntimeTileVisual> RuntimeTileVisuals = new Dictionary<int, RuntimeTileVisual>();
+        private static readonly HashSet<string> WarnedMissingTileSprites = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public struct BuildResult
         {
@@ -50,6 +53,15 @@ namespace HeroDefense.Battle
             public Color top;
             public Color side;
             public Color edge;
+            public string spriteKey;
+            public Sprite sprite;
+        }
+
+        struct RuntimeTileVisual
+        {
+            public SpriteRenderer renderer;
+            public MaterialSpec material;
+            public float elevation;
         }
 
         struct BandSpec
@@ -73,6 +85,59 @@ namespace HeroDefense.Battle
         public static bool IsEnabled()
         {
             return GameConfigBool("battlefield_layout3d_enabled", false);
+        }
+
+        public static void Battle_SetTileTint(int row, int col, string hexColor)
+        {
+            RuntimeTileVisual tile;
+            if (!RuntimeTileVisuals.TryGetValue(TileKey(row, col), out tile) || tile.renderer == null)
+                return;
+
+            bool hasTint = !string.IsNullOrEmpty(hexColor);
+            Color overlay = Color.clear;
+            if (hasTint)
+            {
+                string normalized = hexColor[0] == '#' ? hexColor : "#" + hexColor;
+                if (!ColorUtility.TryParseHtmlString(normalized, out overlay))
+                {
+                    Debug.LogWarning($"[Battlefield3D] 无效格子染色值: {hexColor}");
+                    return;
+                }
+            }
+
+            if (tile.material.sprite != null)
+            {
+                tile.renderer.sprite = tile.material.sprite;
+                if (hasTint)
+                {
+                    float strength = Mathf.Clamp01(overlay.a);
+                    tile.renderer.color = new Color(
+                        Mathf.Lerp(1f, overlay.r, strength),
+                        Mathf.Lerp(1f, overlay.g, strength),
+                        Mathf.Lerp(1f, overlay.b, strength),
+                        1f);
+                }
+                else
+                {
+                    tile.renderer.color = Color.white;
+                }
+                return;
+            }
+
+            MaterialSpec tinted = tile.material;
+            if (hasTint)
+            {
+                float strength = Mathf.Clamp01(overlay.a);
+                Color top = tile.material.top;
+                top.r = Mathf.Lerp(top.r, overlay.r, strength);
+                top.g = Mathf.Lerp(top.g, overlay.g, strength);
+                top.b = Mathf.Lerp(top.b, overlay.b, strength);
+                top.a = tile.material.top.a;
+                tinted.top = top;
+            }
+
+            tile.renderer.sprite = GetTileSprite(tinted, tile.elevation);
+            tile.renderer.color = Color.white;
         }
 
         public static string ResolveLayoutPath()
@@ -396,11 +461,21 @@ namespace HeroDefense.Battle
                 if (!string.Equals(el.Name.LocalName, "Material", StringComparison.OrdinalIgnoreCase)) continue;
                 string id = AttrString(el, "id", "");
                 if (string.IsNullOrEmpty(id)) continue;
+                string spriteKey = AttrString(el, "sprite", "").Trim();
+                Sprite sprite = null;
+                if (!string.IsNullOrEmpty(spriteKey))
+                {
+                    sprite = LoadSceneSprite(spriteKey);
+                    if (sprite == null && WarnedMissingTileSprites.Add(spriteKey))
+                        Debug.LogWarning($"[Battlefield3D] Material '{id}' 地块贴图缺失: {spriteKey}，回落三色地块");
+                }
                 result[id] = new MaterialSpec
                 {
                     top = Hex(AttrString(el, "top", "#617847")),
                     side = Hex(AttrString(el, "side", "#3f5b32")),
-                    edge = Hex(AttrString(el, "edge", "#28391f"))
+                    edge = Hex(AttrString(el, "edge", "#28391f")),
+                    spriteKey = spriteKey,
+                    sprite = sprite
                 };
             }
             return result;
@@ -440,7 +515,8 @@ namespace HeroDefense.Battle
             if (!materials.TryGetValue(string.IsNullOrEmpty(s.material) ? "grass" : s.material, out mat))
                 mat = materials["grass"];
 
-            var sprite = GetTileSprite(mat, s.elevation);
+            bool usesMaterialSprite = mat.sprite != null;
+            var sprite = usesMaterialSprite ? mat.sprite : GetTileSprite(mat, s.elevation);
             var go = new GameObject($"Scene3D_Tile_{s.row}_{s.col}");
             go.transform.SetParent(parent, false);
             go.transform.position = new Vector3(s.x, s.y, s.z);
@@ -451,11 +527,41 @@ namespace HeroDefense.Battle
             sr.sortingOrder = -140 + s.row * Mathf.Max(1, rowDepth) + s.col;
             sr.color = Color.white;
 
-            if (sprite != null && sprite.bounds.size.x > 0f && sprite.bounds.size.y > 0f)
+            if (usesMaterialSprite)
+            {
+                ApplyTileSpriteTransform(go, sprite, s);
+            }
+            else if (sprite != null && sprite.bounds.size.x > 0f && sprite.bounds.size.y > 0f)
             {
                 go.transform.localScale = new Vector3(s.width / sprite.bounds.size.x, s.height / sprite.bounds.size.y, 1f);
             }
+            RuntimeTileVisuals[TileKey(s.row, s.col)] = new RuntimeTileVisual
+            {
+                renderer = sr,
+                material = mat,
+                elevation = s.elevation
+            };
             return true;
+        }
+
+        static void ApplyTileSpriteTransform(GameObject go, Sprite sprite, TileSpec tile)
+        {
+            if (go == null || sprite == null || sprite.bounds.size.x <= 0f || sprite.bounds.size.y <= 0f)
+                return;
+
+            float scale = tile.width / sprite.bounds.size.x;
+            go.transform.localScale = new Vector3(scale, scale, 1f);
+
+            float pivotX = sprite.rect.width > 0f ? sprite.pivot.x / sprite.rect.width : 0.5f;
+            float pivotY = sprite.rect.height > 0f ? sprite.pivot.y / sprite.rect.height : 0.5f;
+            float canvasWidth = sprite.bounds.size.x * scale;
+            float canvasHeight = sprite.bounds.size.y * scale;
+            float topCenterFromBottom = 1f - TileSpriteTopCenterFromTop;
+
+            Vector3 position = go.transform.position;
+            position.x -= (0.5f - pivotX) * canvasWidth;
+            position.y -= (topCenterFromBottom - pivotY) * canvasHeight;
+            go.transform.position = position;
         }
 
         static bool ApplyPropVisual(XElement el, Transform parent)
@@ -683,6 +789,7 @@ namespace HeroDefense.Battle
 
         static void DestroyVisualRoot()
         {
+            RuntimeTileVisuals.Clear();
             var old = GameObject.Find(RuntimeVisualRootName);
             if (old != null)
             {
@@ -691,6 +798,11 @@ namespace HeroDefense.Battle
                 if (Application.isPlaying) UnityEngine.Object.Destroy(old);
                 else UnityEngine.Object.DestroyImmediate(old);
             }
+        }
+
+        static int TileKey(int row, int col)
+        {
+            return row * 1000 + col;
         }
 
         static void SetLegacyGridVisible(bool visible)

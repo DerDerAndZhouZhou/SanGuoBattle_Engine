@@ -31,7 +31,7 @@ namespace XLua.CSObjectWrap
 			Utils.EndObjectRegister(type, L, translator, null, null,
 			    null, null, null);
 
-		    Utils.BeginClassRegister(type, L, __CreateInstance, 59, 1, 1);
+		    Utils.BeginClassRegister(type, L, __CreateInstance, 75, 1, 1);
 			Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetProjectilePoolHits", _m_Battle_GetProjectilePoolHits_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetProjectilePoolMisses", _m_Battle_GetProjectilePoolMisses_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetProjectilePoolFree", _m_Battle_GetProjectilePoolFree_xlua_st_);
@@ -41,7 +41,11 @@ namespace XLua.CSObjectWrap
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_DestroyUnit", _m_Battle_DestroyUnit_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetSprite", _m_Battle_SetSprite_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_PlayAnim", _m_Battle_PlayAnim_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetAnimLen", _m_Battle_GetAnimLen_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetWorldPosition", _m_Battle_SetWorldPosition_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetUnitCellAndStop", _m_Battle_GetUnitCellAndStop_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetUnitCell", _m_Battle_GetUnitCell_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_UnitWalkPath", _m_Battle_UnitWalkPath_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetAlpha", _m_Battle_SetAlpha_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetScale", _m_Battle_SetScale_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetUnitFacing", _m_Battle_SetUnitFacing_xlua_st_);
@@ -54,16 +58,23 @@ namespace XLua.CSObjectWrap
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetEnemyHalted", _m_Battle_SetEnemyHalted_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetEnemyRow", _m_Battle_GetEnemyRow_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetEnemyCol", _m_Battle_GetEnemyCol_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetEnemyCellAndStop", _m_Battle_GetEnemyCellAndStop_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetZones", _m_Battle_SetZones_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_IsCellInOwnZone", _m_Battle_IsCellInOwnZone_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_IsCellInPublicZone", _m_Battle_IsCellInPublicZone_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_IsCellInEnemyZone", _m_Battle_IsCellInEnemyZone_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetCellZone", _m_Battle_GetCellZone_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SpawnProjectile", _m_Battle_SpawnProjectile_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "EnumerateEnemies", _m_EnumerateEnemies_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SpawnProjectileTracking", _m_Battle_SpawnProjectileTracking_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SpawnProjectileToCell", _m_Battle_SpawnProjectileToCell_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SpawnProjectileLine", _m_Battle_SpawnProjectileLine_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SpawnProjectileLineStop", _m_Battle_SpawnProjectileLineStop_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_EnemyGridMode", _m_Battle_EnemyGridMode_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_EnemyStepToCell", _m_Battle_EnemyStepToCell_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_EnemyStepToXY", _m_Battle_EnemyStepToXY_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetEnemyCell", _m_Battle_SetEnemyCell_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_KnockbackEnemy", _m_Battle_KnockbackEnemy_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetCellHighlight", _m_Battle_SetCellHighlight_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_CellToWorldX", _m_Battle_CellToWorldX_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_CellToWorldY", _m_Battle_CellToWorldY_xlua_st_);
@@ -74,6 +85,8 @@ namespace XLua.CSObjectWrap
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_IsCellInBounds", _m_Battle_IsCellInBounds_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_IsCellInCamp", _m_Battle_IsCellInCamp_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetGridVisualStyle", _m_Battle_SetGridVisualStyle_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_ReloadScene2DLayout", _m_Battle_ReloadScene2DLayout_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_ReloadScene3DLayout", _m_Battle_ReloadScene3DLayout_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_CalcSortingOrder", _m_Battle_CalcSortingOrder_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_ShowUIGhost", _m_Battle_ShowUIGhost_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_MoveUIGhost", _m_Battle_MoveUIGhost_xlua_st_);
@@ -81,7 +94,10 @@ namespace XLua.CSObjectWrap
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_IsPointerOverInventory", _m_Battle_IsPointerOverInventory_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_IsPointerOverShop", _m_Battle_IsPointerOverShop_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetInventorySlotAtScreen", _m_Battle_GetInventorySlotAtScreen_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetInventoryRefs", _m_Battle_SetInventoryRefs_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetShopRef", _m_Battle_SetShopRef_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_SetTimeScale", _m_Battle_SetTimeScale_xlua_st_);
+            Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetGameTime", _m_Battle_GetGameTime_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetUnitCount", _m_Battle_GetUnitCount_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetEnemyCount", _m_Battle_GetEnemyCount_xlua_st_);
             Utils.RegisterFunc(L, Utils.CLS_IDX, "Battle_GetProjectileCount", _m_Battle_GetProjectileCount_xlua_st_);
@@ -351,6 +367,33 @@ namespace XLua.CSObjectWrap
         }
         
         [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_GetAnimLen_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    long _handle = LuaAPI.lua_toint64(L, 1);
+                    string _state = LuaAPI.lua_tostring(L, 2);
+                    float _speedMult = (float)LuaAPI.lua_tonumber(L, 3);
+                    
+                        var gen_ret = HeroDefense.Battle.BattleBridge.Battle_GetAnimLen( _handle, _state, _speedMult );
+                        LuaAPI.lua_pushnumber(L, gen_ret);
+                    
+                    
+                    
+                    return 1;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
         static int _m_Battle_SetWorldPosition_xlua_st_(RealStatePtr L)
         {
 		    try {
@@ -373,6 +416,97 @@ namespace XLua.CSObjectWrap
             } catch(System.Exception gen_e) {
                 return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
             }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_GetUnitCellAndStop_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    long _handle = LuaAPI.lua_toint64(L, 1);
+                    
+                        var gen_ret = HeroDefense.Battle.BattleBridge.Battle_GetUnitCellAndStop( _handle );
+                        LuaAPI.xlua_pushinteger(L, gen_ret);
+                    
+                    
+                    
+                    return 1;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_GetUnitCell_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    long _handle = LuaAPI.lua_toint64(L, 1);
+                    
+                        var gen_ret = HeroDefense.Battle.BattleBridge.Battle_GetUnitCell( _handle );
+                        LuaAPI.xlua_pushinteger(L, gen_ret);
+                    
+                    
+                    
+                    return 1;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_UnitWalkPath_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+			    int gen_param_count = LuaAPI.lua_gettop(L);
+            
+                if(gen_param_count == 3&& (LuaTypes.LUA_TNUMBER == LuaAPI.lua_type(L, 1) || LuaAPI.lua_isint64(L, 1))&& (LuaAPI.lua_isnil(L, 2) || LuaAPI.lua_type(L, 2) == LuaTypes.LUA_TSTRING)&& LuaTypes.LUA_TNUMBER == LuaAPI.lua_type(L, 3)) 
+                {
+                    long _handle = LuaAPI.lua_toint64(L, 1);
+                    string _pathCsv = LuaAPI.lua_tostring(L, 2);
+                    float _speed = (float)LuaAPI.lua_tonumber(L, 3);
+                    
+                    HeroDefense.Battle.BattleBridge.Battle_UnitWalkPath( _handle, _pathCsv, _speed );
+                    
+                    
+                    
+                    return 0;
+                }
+                if(gen_param_count == 2&& (LuaTypes.LUA_TNUMBER == LuaAPI.lua_type(L, 1) || LuaAPI.lua_isint64(L, 1))&& (LuaAPI.lua_isnil(L, 2) || LuaAPI.lua_type(L, 2) == LuaTypes.LUA_TSTRING)) 
+                {
+                    long _handle = LuaAPI.lua_toint64(L, 1);
+                    string _pathCsv = LuaAPI.lua_tostring(L, 2);
+                    
+                    HeroDefense.Battle.BattleBridge.Battle_UnitWalkPath( _handle, _pathCsv );
+                    
+                    
+                    
+                    return 0;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+            return LuaAPI.luaL_error(L, "invalid arguments to HeroDefense.Battle.BattleBridge.Battle_UnitWalkPath!");
             
         }
         
@@ -686,6 +820,31 @@ namespace XLua.CSObjectWrap
         }
         
         [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_GetEnemyCellAndStop_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    long _handle = LuaAPI.lua_toint64(L, 1);
+                    
+                        var gen_ret = HeroDefense.Battle.BattleBridge.Battle_GetEnemyCellAndStop( _handle );
+                        LuaAPI.xlua_pushinteger(L, gen_ret);
+                    
+                    
+                    
+                    return 1;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
         static int _m_Battle_SetZones_xlua_st_(RealStatePtr L)
         {
 		    try {
@@ -776,6 +935,32 @@ namespace XLua.CSObjectWrap
                     
                         var gen_ret = HeroDefense.Battle.BattleBridge.Battle_IsCellInEnemyZone( _row, _col );
                         LuaAPI.lua_pushboolean(L, gen_ret);
+                    
+                    
+                    
+                    return 1;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_GetCellZone_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    int _row = LuaAPI.xlua_tointeger(L, 1);
+                    int _col = LuaAPI.xlua_tointeger(L, 2);
+                    
+                        var gen_ret = HeroDefense.Battle.BattleBridge.Battle_GetCellZone( _row, _col );
+                        LuaAPI.lua_pushstring(L, gen_ret);
                     
                     
                     
@@ -930,6 +1115,115 @@ namespace XLua.CSObjectWrap
         }
         
         [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_SpawnProjectileLineStop_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    long _srcHandle = LuaAPI.lua_toint64(L, 1);
+                    float _dirX = (float)LuaAPI.lua_tonumber(L, 2);
+                    float _dirY = (float)LuaAPI.lua_tonumber(L, 3);
+                    float _distance = (float)LuaAPI.lua_tonumber(L, 4);
+                    float _width = (float)LuaAPI.lua_tonumber(L, 5);
+                    string _projectileKey = LuaAPI.lua_tostring(L, 6);
+                    float _speed = (float)LuaAPI.lua_tonumber(L, 7);
+                    
+                        var gen_ret = HeroDefense.Battle.BattleBridge.Battle_SpawnProjectileLineStop( _srcHandle, _dirX, _dirY, _distance, _width, _projectileKey, _speed );
+                        LuaAPI.lua_pushint64(L, gen_ret);
+                    
+                    
+                    
+                    return 1;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_EnemyGridMode_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    long _handle = LuaAPI.lua_toint64(L, 1);
+                    
+                    HeroDefense.Battle.BattleBridge.Battle_EnemyGridMode( _handle );
+                    
+                    
+                    
+                    return 0;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_EnemyStepToCell_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    long _handle = LuaAPI.lua_toint64(L, 1);
+                    int _row = LuaAPI.xlua_tointeger(L, 2);
+                    int _col = LuaAPI.xlua_tointeger(L, 3);
+                    
+                        var gen_ret = HeroDefense.Battle.BattleBridge.Battle_EnemyStepToCell( _handle, _row, _col );
+                        LuaAPI.lua_pushboolean(L, gen_ret);
+                    
+                    
+                    
+                    return 1;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_EnemyStepToXY_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    long _handle = LuaAPI.lua_toint64(L, 1);
+                    float _wx = (float)LuaAPI.lua_tonumber(L, 2);
+                    float _wy = (float)LuaAPI.lua_tonumber(L, 3);
+                    
+                        var gen_ret = HeroDefense.Battle.BattleBridge.Battle_EnemyStepToXY( _handle, _wx, _wy );
+                        LuaAPI.lua_pushboolean(L, gen_ret);
+                    
+                    
+                    
+                    return 1;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
         static int _m_Battle_SetEnemyCell_xlua_st_(RealStatePtr L)
         {
 		    try {
@@ -943,6 +1237,31 @@ namespace XLua.CSObjectWrap
                     int _col = LuaAPI.xlua_tointeger(L, 3);
                     
                     HeroDefense.Battle.BattleBridge.Battle_SetEnemyCell( _handle, _row, _col );
+                    
+                    
+                    
+                    return 0;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_KnockbackEnemy_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    long _handle = LuaAPI.lua_toint64(L, 1);
+                    float _cells = (float)LuaAPI.lua_tonumber(L, 2);
+                    
+                    HeroDefense.Battle.BattleBridge.Battle_KnockbackEnemy( _handle, _cells );
                     
                     
                     
@@ -1214,6 +1533,54 @@ namespace XLua.CSObjectWrap
         }
         
         [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_ReloadScene2DLayout_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    
+                        var gen_ret = HeroDefense.Battle.BattleBridge.Battle_ReloadScene2DLayout(  );
+                        LuaAPI.lua_pushboolean(L, gen_ret);
+                    
+                    
+                    
+                    return 1;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_ReloadScene3DLayout_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    
+                        var gen_ret = HeroDefense.Battle.BattleBridge.Battle_ReloadScene3DLayout(  );
+                        LuaAPI.lua_pushboolean(L, gen_ret);
+                    
+                    
+                    
+                    return 1;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
         static int _m_Battle_CalcSortingOrder_xlua_st_(RealStatePtr L)
         {
 		    try {
@@ -1393,6 +1760,59 @@ namespace XLua.CSObjectWrap
         }
         
         [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_SetInventoryRefs_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+                ObjectTranslator translator = ObjectTranslatorPool.Instance.Find(L);
+            
+            
+            
+                
+                {
+                    UnityEngine.GameObject _invPanel = (UnityEngine.GameObject)translator.GetObject(L, 1, typeof(UnityEngine.GameObject));
+                    UnityEngine.GameObject _slotsListGo = (UnityEngine.GameObject)translator.GetObject(L, 2, typeof(UnityEngine.GameObject));
+                    
+                    HeroDefense.Battle.BattleBridge.Battle_SetInventoryRefs( _invPanel, _slotsListGo );
+                    
+                    
+                    
+                    return 0;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_SetShopRef_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+                ObjectTranslator translator = ObjectTranslatorPool.Instance.Find(L);
+            
+            
+            
+                
+                {
+                    UnityEngine.GameObject _shopPanel = (UnityEngine.GameObject)translator.GetObject(L, 1, typeof(UnityEngine.GameObject));
+                    
+                    HeroDefense.Battle.BattleBridge.Battle_SetShopRef( _shopPanel );
+                    
+                    
+                    
+                    return 0;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
         static int _m_Battle_SetTimeScale_xlua_st_(RealStatePtr L)
         {
 		    try {
@@ -1408,6 +1828,30 @@ namespace XLua.CSObjectWrap
                     
                     
                     return 0;
+                }
+                
+            } catch(System.Exception gen_e) {
+                return LuaAPI.luaL_error(L, "c# exception:" + gen_e);
+            }
+            
+        }
+        
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        static int _m_Battle_GetGameTime_xlua_st_(RealStatePtr L)
+        {
+		    try {
+            
+            
+            
+                
+                {
+                    
+                        var gen_ret = HeroDefense.Battle.BattleBridge.Battle_GetGameTime(  );
+                        LuaAPI.lua_pushnumber(L, gen_ret);
+                    
+                    
+                    
+                    return 1;
                 }
                 
             } catch(System.Exception gen_e) {
