@@ -11,20 +11,20 @@ using XLua;
 namespace HeroDefense.Battle
 {
     /// <summary>
-    /// 单位视图（兵种 / 武将 / 建筑 / 怪 通用）。
+    /// 单位视图（兵种 / 武将 / 建筑通用）。
     ///
     /// 设计原则（CLAUDE.md §1）：
     ///   - 0 SerializeField — 用 UIFinder 子节点查找 hp_bar / shadow / sprite_root
     ///   - **不存业务数据**（不存 hp/atk/lv 数值 — 那是 Lua 的）
     ///   - 持 long Handle（BattleBridge 句柄表 key），业务 Lua 通过 handle 操作
-    ///   - sortingOrder 由 GridSortingService 在外部驱动（如 EnemyMover 每帧更新）
+    ///   - sortingOrder 由 GridSortingService 在外部驱动
     ///
     /// 子节点约定（prefab 或 runtime build）：
     ///   - sprite_root (有 SpriteRenderer)
     ///   - hp_bar (UI Image 或 SpriteRenderer)
     ///   - shadow (SpriteRenderer，可选)
     ///
-    /// Step 11 性能优化（v3 design.md §3）：
+    /// 性能优化：
     ///   - 屏外 culling：OnBecameInvisible 暂停 SpriteAnimator 帧切（IsOnScreen 暴露给外部 culling 决策）
     ///   - 血条距离剔除：每 0.5s 检查到 Camera.main 距离，超过 shadow_distance_cull_units cell 时隐藏 hp_bar
     ///   - GameConfig 驱动（culling_enabled / shadow_distance_cull_units / hp_bar_cull_check_interval）
@@ -37,52 +37,59 @@ namespace HeroDefense.Battle
         UnityEngine.EventSystems.IEndDragHandler
     {
         public long Handle { get; set; }
+        public int Team { get; set; }
 
         // 资源引用（Awake 时一次性查找，避免每帧 lookup）
         public SpriteRenderer Sr { get; private set; }
         public Transform HpBarRoot { get; private set; }
         public Transform ShadowRoot { get; private set; }
+        public Vector3 SpriteBaseLocalPos { get; private set; }
 
         // sortingOrder 缓存（GridSortingService.UpdateIfChanged 使用）
         public float LastSortY { get; set; }
 
-        // 屏外 culling 状态（Step 11 优化用）— 外部（EnemyMover/SpriteAnimator）可读
+        // 屏外 culling 状态 — 外部表现组件可读
         public bool IsOnScreen { get; private set; } = true;
 
         private SpriteRenderer _shadowSr;
-        // hp_bar 可能是 UI.Image (filled) 或 SpriteRenderer 的局部 scaleX
+        // hp_bar 可兼容单 Image；正式场上单位使用武将/兵力两个 fill。
         private Image _hpBarImage;
-        private Transform _hpBarFill;
-        private float _hpBarMaxScaleX = 1f;
+        private Transform _heroBarFill;
+        private Transform _troopBarFill;
+        private float _heroBarMaxScaleX = 1f;
+        private float _troopBarMaxScaleX = 1f;
+        public string StatusBarMode { get; private set; } = "dual";
 
         // 缓存的 SpriteAnimator 引用（OnBecameInvisible 时暂停帧切以省 CPU）
         private SpriteAnimator _animator;
 
-        // 血条距离剔除 — 配置 + 状态
-        // T215 (2026-05-21):默认关掉剔除。MVP 阶段单位 < 50 性能无压力,直接关。
-        // R1a 后 cell 距离单位取 GridMap.CellSizeX（真实 1.28，非旧逻辑 1.0），但 culling 关闭故仅缓存不生效。
+        // 状态条距离剔除配置与状态。
         private static bool _perfCfgLoaded;
         private static bool _cullingEnabled = false;
         private static float _hpBarCullDistCells = 5f;
         private static float _hpBarCullCheckInterval = 0.5f;
+        private static float _unitScreenScale = 1f;
+        private static float _bundleScreenScale;   // 动画包画布专用倍率；<=0 时回落 _unitScreenScale
         private static float _cellSizeCache = 1f;
         private float _hpBarCullAccum;
         private bool _hpBarUserVisible = true;     // 业务侧设的可见性（SetHpBarVisible）
         private bool _hpBarDistCulled;             // 距离剔除强制隐藏
+        private bool _hpBarAnimHidden;              // 动画状态 hide_hp 强制隐藏（第三路独立门控）
 
-        // ============ Round 12 — 多占位 footprint（Issue 1 + Issue 4） ============
-        // SetFootprint 由 BattleBridge.Battle_SpawnUnit 在 spawn 后按 occupy.txt 调用：
-        //   - collider 覆盖整个 w×h 占位格 → 点任意占位格都能起手拖（Issue 1）
-        //   - sprite_root 按 block 脚底站位点锚定；显示尺寸对齐拖拽 UI ghost，不再按格子压缩
+        // 多占位 footprint。
+        // SetFootprint 由 BattleBridge.Battle_SpawnUnit 在 spawn 后按 occupy.tab 调用：
+        //   - collider 覆盖整个 w×h 占位格；
+        //   - sprite_root 按 block 脚底站位点锚定。
         // root GameObject scale 始终 (1,1,1)；视觉缩放只设在 sprite_root.localScale。
         private int _fpW = 1;
         private int _fpH = 1;
         private float _blockW = CELL_W;   // block 世界包围盒宽（含一整个 cell）
         private float _blockH = CELL_H;
-        private float _dragGhostScale = 0f;
+        private float _spriteFitScale;
+        private float _bundleFitScale;
+        private int _bundleFitCanvasH;
 
-        // cell 视觉世界尺寸：R1a 经 grid.tab cell_w/cell_h → GridMap.CellSizeX/Y 配置化（默认 1.28×0.96）。
-        // 单位在 grid 初始化后才 spawn → 取值时 GridMap 已加载；与 CellView.EnsureCellScale 同源。
+        // 单位在 grid 初始化后才 spawn，因此这里读取的是当前 grid.tab 尺寸。
         private static float CELL_W => GridMap.CellSizeX;
         private static float CELL_H => GridMap.CellSizeY;
 
@@ -93,9 +100,7 @@ namespace HeroDefense.Battle
             if (spriteRootTr != null) Sr = spriteRootTr.GetComponent<SpriteRenderer>();
             if (Sr == null) Sr = GetComponentInChildren<SpriteRenderer>();
 
-            // Issue 1/4 — 加 BoxCollider2D 让 OnMouseDown/Drag/Up 能响应（场上单位起手拖）
-            // 没有 Rigidbody2D 也能用 OnMouseXXX；尺寸初值 1×1（CELL_W×CELL_H），
-            // 多占位单位由 SetFootprint 覆盖成整个 w×h 占位格
+            // BoxCollider2D 只用于 EventSystem 拾取；多占位单位随后由 SetFootprint 扩展。
             EnsureCollider();
 
             HpBarRoot = UIFinder.FindChildByName(transform, "hp_bar");
@@ -104,11 +109,21 @@ namespace HeroDefense.Battle
                 _hpBarImage = HpBarRoot.GetComponent<Image>();
                 if (_hpBarImage == null)
                 {
-                    // 尝试 fill 子节点（用 localScale.x 表示 hp 比例）
-                    _hpBarFill = UIFinder.FindChildByName(HpBarRoot, "fill");
-                    if (_hpBarFill != null)
+                    _heroBarFill =
+                        UIFinder.FindChildByName(HpBarRoot, "fill");
+                    _troopBarFill =
+                        UIFinder.FindChildByName(
+                            HpBarRoot,
+                            "troop_fill");
+                    if (_heroBarFill != null)
                     {
-                        _hpBarMaxScaleX = _hpBarFill.localScale.x;
+                        _heroBarMaxScaleX =
+                            _heroBarFill.localScale.x;
+                    }
+                    if (_troopBarFill != null)
+                    {
+                        _troopBarMaxScaleX =
+                            _troopBarFill.localScale.x;
                     }
                 }
             }
@@ -138,6 +153,12 @@ namespace HeroDefense.Battle
 
                     var rowItv = cm.GetTableInfo("GameConfig", "key", "hp_bar_cull_check_interval");
                     if (rowItv != null) _hpBarCullCheckInterval = cm.GetValue<float>(rowItv, "value", 0.5f);
+
+                    var rowScale = cm.GetTableInfo("GameConfig", "key", "unit_screen_scale");
+                    if (rowScale != null) _unitScreenScale = Mathf.Max(0.01f, cm.GetValue<float>(rowScale, "value", 1f));
+
+                    var rowBundleScale = cm.GetTableInfo("GameConfig", "key", "anim_bundle_screen_scale");
+                    if (rowBundleScale != null) _bundleScreenScale = cm.GetValue<float>(rowBundleScale, "value", 0f);
 
                     _cellSizeCache = GridMap.CellSizeX > 0f ? GridMap.CellSizeX : 1f;
                 }
@@ -176,7 +197,7 @@ namespace HeroDefense.Battle
             ApplyGridRowSorting(cell.row, wy);
         }
 
-        /// <summary>hp 比例（0..1）。优先 Image.fillAmount，回退 child fill scaleX。</summary>
+        /// <summary>单状态条调用；只更新武将/建筑生命，不改兵力条。</summary>
         public void SetHp(float cur, float max)
         {
             float pct = (max > 0f) ? Mathf.Clamp01(cur / max) : 0f;
@@ -184,26 +205,90 @@ namespace HeroDefense.Battle
             {
                 _hpBarImage.fillAmount = pct;
             }
-            else if (_hpBarFill != null)
+            else if (_heroBarFill != null)
             {
-                var s = _hpBarFill.localScale;
-                s.x = _hpBarMaxScaleX * pct;
-                _hpBarFill.localScale = s;
+                var s = _heroBarFill.localScale;
+                s.x = _heroBarMaxScaleX * pct;
+                _heroBarFill.localScale = s;
             }
+        }
+
+        /// <summary>只接收 0..1 表现比例，不保存任何业务 maxHP。</summary>
+        public void SetStatusBars(float heroPct, float troopPct)
+        {
+            SetHp(Mathf.Clamp01(heroPct), 1f);
+            if (_troopBarFill == null)
+            {
+                ResolveHpBarRoot();
+            }
+            if (_troopBarFill != null)
+            {
+                var s = _troopBarFill.localScale;
+                s.x = _troopBarMaxScaleX
+                    * Mathf.Clamp01(troopPct);
+                _troopBarFill.localScale = s;
+            }
+        }
+
+        public void SetStatusBarMode(string mode)
+        {
+            string normalized =
+                string.Equals(
+                    mode,
+                    "single",
+                    System.StringComparison.OrdinalIgnoreCase)
+                    ? "single"
+                    : "dual";
+            StatusBarMode = normalized;
+            var hp = ResolveHpBarRoot();
+            if (hp == null) return;
+            bool dual = normalized == "dual";
+            var troopBg =
+                UIFinder.FindChildByName(hp, "troop_bg");
+            if (troopBg != null)
+                troopBg.gameObject.SetActive(dual);
+            if (_troopBarFill != null)
+                _troopBarFill.gameObject.SetActive(dual);
+            var sr = ResolveSr();
+            if (sr != null)
+            {
+                float full =
+                    BattleBridge.LayoutHpBar(hp, sr);
+                _heroBarMaxScaleX = full;
+                _troopBarMaxScaleX = full;
+            }
+            ApplyStatusBarVisibility();
         }
 
         public void SetHpBarVisible(bool visible)
         {
             _hpBarUserVisible = visible;
-            ApplyHpBarVisibility();
+            ApplyStatusBarVisibility();
         }
 
-        private void ApplyHpBarVisibility()
+        public void SetHpBarAnimHidden(bool hidden)
+        {
+            _hpBarAnimHidden = hidden;
+            ApplyStatusBarVisibility();
+        }
+
+        private void ApplyStatusBarVisibility()
         {
             if (HpBarRoot == null) return;
-            bool show = _hpBarUserVisible && !_hpBarDistCulled;
+            bool show = _hpBarUserVisible && !_hpBarDistCulled && !_hpBarAnimHidden;
             if (HpBarRoot.gameObject.activeSelf != show)
                 HpBarRoot.gameObject.SetActive(show);
+        }
+
+        private void OnDisable()
+        {
+            _hpBarAnimHidden = false;
+        }
+
+        private void OnEnable()
+        {
+            _hpBarAnimHidden = false;
+            ApplyStatusBarVisibility();
         }
 
         public void SetShadow(bool visible)
@@ -220,6 +305,8 @@ namespace HeroDefense.Battle
                 c.a = Mathf.Clamp01(alpha);
                 Sr.color = c;
             }
+            if (_animator == null) _animator = GetComponent<SpriteAnimator>();
+            if (_animator != null) _animator.SetBaseAlpha(alpha);
         }
 
         public void SetScale(float scale)
@@ -232,7 +319,7 @@ namespace HeroDefense.Battle
             if (Sr != null) Sr.sortingLayerName = layerName;
         }
 
-        /// <summary>设朝向：原图朝右；faceRight=false → flipX 翻转朝左。攻击时朝目标。</summary>
+        /// <summary>设置镜像朝向；原生 *_left 方向帧播放时由 BattleBridge 取消 flipX。</summary>
         public void SetFacing(bool faceRight)
         {
             var sr = ResolveSr();
@@ -242,7 +329,7 @@ namespace HeroDefense.Battle
         // ============ 屏外 culling（Step 11 优化 — OnBecameInvisible/Visible 由 Unity 触发） ============
         //
         // OnBecameInvisible：暂停 SpriteAnimator 帧切 + 隐藏 hp_bar（仍跑 Update 让业务/距离剔除可工作，
-        //                   但不耗 sprite swap）。位移/AI 由 EnemyMover 自身决策（怪屏外仍向营帐走）。
+        //                   但不耗 sprite swap）。位移与业务状态不受影响。
         // OnBecameVisible ：恢复帧切 + 还原 hp_bar 状态。
         private void OnBecameInvisible()
         {
@@ -263,14 +350,14 @@ namespace HeroDefense.Battle
             {
                 if (_animator != null) _animator.OnHitStopEnd();
                 // 还原血条（按业务 + 距离 cull 双门控）
-                ApplyHpBarVisibility();
+                ApplyStatusBarVisibility();
             }
         }
 
         // ============ 血条距离剔除（Step 11 优化 — 每 0.5s 检查 Camera.main 距离） ============
         private void Update()
         {
-            // R3a：手势长按轮询（必须在 culling 早退之前 —— culling 关闭时拖拽/按住仍要工作）
+            // 长按轮询必须在 culling 早退之前执行。
             if (_gesture != null) _gesture.Tick();
 
             if (!_cullingEnabled) return;
@@ -293,20 +380,13 @@ namespace HeroDefense.Battle
             if (shouldCull != _hpBarDistCulled)
             {
                 _hpBarDistCulled = shouldCull;
-                ApplyHpBarVisibility();
+                ApplyStatusBarVisibility();
             }
         }
 
-        // ============ R3a (2026-06-11) — 场上单位输入统一走 EventSystem + GestureArbiter ============
-        //
-        // 旧实现 OnMouseDown/Drag/Up + Input.mousePosition 已废（tech-research 炸弹①：与
-        // DragInputBridge 是两套独立状态机/坐标系，WebGL 缩放 canvas 下 Input.mousePosition 偏格；
-        // 且 OnMouse 路径无法拿到 tap/双击分类）。现与 UI 卡同源：
-        //   Physics2DRaycaster(BattleCamera，BattleSceneController 注入) → IPointer/IDrag 事件
-        //   → GestureArbiter 分类 → 拖拽走 Battle_OnDragBegin/Move/End("unit_field")，
-        //     tap → Battle_OnTap，双击 → Battle_OnDoubleTap（弹详情/收回门控全在 Lua）。
-        // UI 优先天然成立：EventSystem 单一命中，指针落在 UI 上时本组件收不到事件
-        // （旧版手动 IsPointerOverGameObject 屏蔽不再需要）。
+        // 场上单位输入统一走 EventSystem + GestureArbiter。
+        // Physics2DRaycaster → Pointer/Drag 事件 → GestureArbiter → 可选 Lua 表现回调。
+        // 当前 Match 不依赖这些回调完成裁定。
 
         private GestureArbiter _gesture;
 
@@ -336,22 +416,16 @@ namespace HeroDefense.Battle
             GestureArbiter.EnsureConfig();
         }
 
-        // ============ Round 12 — SetFootprint / FitSpriteToBlock ============
+        // ============ SetFootprint / FitSpriteToBlock ============
 
         /// <summary>
         /// 按 occupy 形状（w×h 占位格，anchor 在 (row,col)）重定位 sprite_root + 重设 collider。
         /// 由 BattleBridge.Battle_SpawnUnit 在 spawn 后调用。
-        ///   - collider.size = block 包围盒，offset = block 几何中心相对 anchor 的偏移 → 整个占位格可点（Issue 1）
-        ///   - sprite_root.localPosition = 同偏移 → sprite 居中在 block 而非 anchor cell（Issue 4）
+        ///   - collider.size = block 包围盒，offset = block 几何中心相对 anchor 的偏移；
+        ///   - sprite_root.localPosition = 同偏移，使 sprite 居中在 block。
         ///   - 若 sprite 已存在立即 FitSpriteToBlock；否则等 Battle_SetSprite/PlayAnim 后补 fit
-        /// 1×1 单位：offset=0, block=1cell → 行为与旧版一致（不回归）。
-        ///
-        /// 几何来源（Round 12 修正）：block 包围盒按 anchor cell + 固定 cell 步距推算，
-        ///   **不**读 far cell 的 CellToWorld。原因：营帐 4 格在 GameScene 没有 CellView 节点，
-        ///   GridMap.CellToWorld 对缺失 cell 会落到 1.0-步距公式（与真实 1.28×0.96 场景坐标不同尺度），
-        ///   导致 anchor 上/左方的多占位单位 far corner 落在营帐时算出错乱包围盒。
-        ///   网格为均匀 1.28(W)×0.96(H) 栅格（已实测）→ block 直接 = w·CELL_W × h·CELL_H，
-        ///   block 从 anchor cell 向右(+X)、向下(-Y)展开。
+        /// block 包围盒按 anchor cell 与当前 grid.tab 步距推算，不读取远端 cell，
+        /// 从 anchor 向右（+X）、向下（-Y）展开。
         /// </summary>
         public void SetFootprint(int row, int col, int w, int h)
         {
@@ -382,7 +456,7 @@ namespace HeroDefense.Battle
                 rt.localPosition = new Vector3(offset.x, offset.y, lp.z);
             }
 
-            // collider 覆盖整个 w×h 占位格（Issue 1）
+            // collider 覆盖整个 w×h 占位格。
             var bc = GetComponent<BoxCollider2D>();
             if (bc == null) bc = gameObject.AddComponent<BoxCollider2D>();
             bc.isTrigger = true;
@@ -414,12 +488,35 @@ namespace HeroDefense.Battle
         {
             var sr = ResolveSr();
             if (sr == null || sr.sprite == null) return;
+
+            if (_animator == null) _animator = GetComponent<SpriteAnimator>();
+            if (_animator != null && _animator.InBundleMode && _animator.CanvasH > 0)
+            {
+                int canvasH = _animator.CanvasH;
+                if (recomputeScale || _bundleFitScale <= 0f || _bundleFitCanvasH != canvasH)
+                {
+                    _bundleFitScale = CalcScreenPixelEquivalentScale(canvasH);
+                    _bundleFitCanvasH = canvasH;
+                }
+                float bundleScale = _bundleFitScale;
+                sr.transform.localScale = new Vector3(bundleScale, bundleScale, 1f);
+
+                float bundleBaseX = (_fpW - 1) * 0.5f * CELL_W;
+                float bundleBaseY = -(_fpH - 1) * 0.5f * CELL_H;
+                float bundleBlockBottom = bundleBaseY - _blockH * 0.5f;
+                var bundleLp = sr.transform.localPosition;
+                SpriteBaseLocalPos = new Vector3(bundleBaseX, bundleBlockBottom, bundleLp.z);
+                sr.transform.localPosition = SpriteBaseLocalPos;
+                RefreshHpBarLayout(sr);
+                return;
+            }
+
             var sz = sr.sprite.bounds.size;   // world units（已含 pixelsPerUnit=100，全工程恒定）
             if (sz.x <= 0f || sz.y <= 0f) return;
 
-            if (recomputeScale || _dragGhostScale <= 0f)
-                _dragGhostScale = CalcDragGhostEquivalentScale(sr.sprite, sz);
-            float s = _dragGhostScale;
+            if (recomputeScale || _spriteFitScale <= 0f)
+                _spriteFitScale = CalcSpriteEquivalentScale(sr.sprite, sz);
+            float s = _spriteFitScale;
             sr.transform.localScale = new Vector3(s, s, 1f);
 
             // 锚定：整张图片画布底部中心对齐格子站位点。
@@ -432,12 +529,14 @@ namespace HeroDefense.Battle
             var lp0 = sr.transform.localPosition;
             float lx = baseX - bb.center.x * s;
             float ly = blockBottom - (bb.center.y - bb.extents.y) * s;
-            sr.transform.localPosition = new Vector3(lx, ly, lp0.z);
+            SpriteBaseLocalPos = new Vector3(lx, ly, lp0.z);
+            sr.transform.localPosition = SpriteBaseLocalPos;
             RefreshHpBarLayout(sr);
         }
 
         internal static float CalcScreenPixelEquivalentScale(Sprite sprite, Vector2 spriteWorldSize)
         {
+            EnsurePerfConfig();
             if (sprite == null || spriteWorldSize.y <= 0f) return 1f;
 
             var cam = ResolveBattleCamera();
@@ -451,10 +550,30 @@ namespace HeroDefense.Battle
             float desiredWorldHeight = sprite.rect.height * canvasScale * worldPerScreenPixel;
             if (desiredWorldHeight <= 0f) return 1f;
 
-            return desiredWorldHeight / spriteWorldSize.y;
+            return desiredWorldHeight / spriteWorldSize.y * _unitScreenScale;
         }
 
-        private static float CalcDragGhostEquivalentScale(Sprite sprite, Vector2 spriteWorldSize)
+        internal static float CalcScreenPixelEquivalentScale(int canvasHeight)
+        {
+            EnsurePerfConfig();
+            if (canvasHeight <= 0) return 1f;
+
+            var cam = ResolveBattleCamera();
+            if (cam == null || !cam.orthographic) return 1f;
+
+            float pixelHeight = cam.pixelHeight > 0 ? cam.pixelHeight : Screen.height;
+            if (pixelHeight <= 0f) return 1f;
+
+            float worldPerScreenPixel = (cam.orthographicSize * 2f) / pixelHeight;
+            float canvasScale = ResolveRootCanvasScaleFactor();
+            float desiredWorldHeight = canvasHeight * canvasScale * worldPerScreenPixel;
+            float canvasWorldHeight = canvasHeight / 100f;
+            if (desiredWorldHeight <= 0f || canvasWorldHeight <= 0f) return 1f;
+
+            return desiredWorldHeight / canvasWorldHeight * (_bundleScreenScale > 0f ? _bundleScreenScale : _unitScreenScale);
+        }
+
+        private static float CalcSpriteEquivalentScale(Sprite sprite, Vector2 spriteWorldSize)
         {
             return CalcScreenPixelEquivalentScale(sprite, spriteWorldSize);
         }
@@ -489,8 +608,20 @@ namespace HeroDefense.Battle
             HpBarRoot = UIFinder.FindChildByName(transform, "hp_bar");
             if (HpBarRoot == null) return null;
             _hpBarImage = HpBarRoot.GetComponent<Image>();
-            _hpBarFill = UIFinder.FindChildByName(HpBarRoot, "fill");
-            if (_hpBarFill != null) _hpBarMaxScaleX = Mathf.Max(0.0001f, _hpBarFill.localScale.x);
+            _heroBarFill =
+                UIFinder.FindChildByName(HpBarRoot, "fill");
+            _troopBarFill =
+                UIFinder.FindChildByName(
+                    HpBarRoot,
+                    "troop_fill");
+            if (_heroBarFill != null)
+                _heroBarMaxScaleX = Mathf.Max(
+                    0.0001f,
+                    _heroBarFill.localScale.x);
+            if (_troopBarFill != null)
+                _troopBarMaxScaleX = Mathf.Max(
+                    0.0001f,
+                    _troopBarFill.localScale.x);
             return HpBarRoot;
         }
 
@@ -499,8 +630,14 @@ namespace HeroDefense.Battle
             var hp = ResolveHpBarRoot();
             if (hp == null || sr == null || sr.sprite == null) return;
             float fullW = BattleBridge.LayoutHpBar(hp, sr);
-            _hpBarFill = UIFinder.FindChildByName(hp, "fill");
-            if (_hpBarFill != null) _hpBarMaxScaleX = fullW;
+            _heroBarFill =
+                UIFinder.FindChildByName(hp, "fill");
+            _troopBarFill =
+                UIFinder.FindChildByName(hp, "troop_fill");
+            if (_heroBarFill != null)
+                _heroBarMaxScaleX = fullW;
+            if (_troopBarFill != null)
+                _troopBarMaxScaleX = fullW;
         }
 
         public void OnPointerDown(UnityEngine.EventSystems.PointerEventData e)

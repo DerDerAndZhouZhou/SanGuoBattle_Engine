@@ -1,42 +1,29 @@
-using System.Collections.Generic;
 using UnityEngine;
 using HeroDefense.Config;
 
 namespace HeroDefense.Battle
 {
     /// <summary>
-    /// 网格坐标系唯一映射点（CLAUDE.md §10 R-V9 / R-V13 / R-13）。
+    /// 网格坐标系唯一映射点。
     ///
     /// 设计约束：
-    ///   - 8×12 网格（v4 2026-05-14 用户拍板，原 v3 是 8×14）
-    ///   - cell 像素 128(W)×96(H)，源自 bg 1920×1280（v5 高度改 1280）：战场宽=1920, 战场高=1024(=1280×4/5), 网格宽=1536=1920×4/5/12=128, 网格高=768=1024×3/4/8=96
-    ///   - 营帐位置 v5 (4,1)-(5,2)（原 v4 (5,1)-(6,2)）
+    ///   - 正式对局为 14 行 × 5 列；row/col 使用四邻接。
+    ///   - 默认单格世界尺寸 1.08 × 0.92；Scene3D 布局可提供最终视觉坐标。
     ///   - **逻辑坐标**：row/col 左上原点 (1,1) → (rows, cols)；row 向下递增（与设计文档一致）
     ///   - **Unity world**：worldY = -(row - 1) * cellSize（Y 越下 worldY 越小 / 越负 → sortingOrder 越大）
     ///   - 业务 Lua **禁直接用 worldY**，必须走 GridMap / GridSortingService（避免坐标系混用）
-    ///   - 0 SerializeField — 全部数据从 grid.txt 读
-    ///
-    /// 营帐区（不可放置）：默认 (row=5,col=1) 起 2×2 = (5,1)(5,2)(6,1)(6,2)
+    ///   - 0 SerializeField — 全部数据从 grid.tab 读。
+    ///   - 主营、拒马和箭塔是 MatchView 生成的真实单位，不写进网格占位。
     ///
     /// 启动期 BattleSceneController.TryEnterReady 调 <see cref="InitFromConfig(int)"/> 初始化。
     /// </summary>
     public static class GridMap
     {
-        // ============ 静态状态（从 grid.txt 初始化） ============
-        public static int Rows = 8;
-        public static int Cols = 12;  // v4 2026-05-14 用户拍板 8×12（原 8×14）
-        // R1a 2026-06-10：单格世界尺寸非方格（编辑器实测 1.28×0.96）。原单 CellSize=1.0 是逻辑值、与真实场景
-        // 步长不符（仅 Cells==null 兜底公式时命中）→ 拆 X/Y 双轴入 grid.tab(cell_w/cell_h)，统一散落 3 处硬编码
-        // （CellView.EnsureCellScale 视觉缩放 / UnitView 包围盒 / 本类兜底公式+lattice 默认步长）。
-        public static float CellSizeX = 1.28f;   // 单格世界宽（grid.tab cell_w）
-        public static float CellSizeY = 0.96f;   // 单格世界高（grid.tab cell_h；CellToWorld 中按 -Y 方向用）
-
-        // 营帐矩形（不可放置区）：左上 (CampRectRow0, CampRectCol0) + 宽 CampRectW × 高 CampRectH
-        // v5 2026-05-14：camp 移到 (4,1)-(5,2)
-        public static int CampRectRow0 = 4;
-        public static int CampRectCol0 = 1;
-        public static int CampRectW = 2;
-        public static int CampRectH = 2;
+        // ============ 静态状态（从 grid.tab 初始化） ============
+        public static int Rows = 14;
+        public static int Cols = 5;
+        public static float CellSizeX = 1.08f;
+        public static float CellSizeY = 0.92f;
 
         // 当前关卡 grid_id（用于热重载）
         public static int CurrentGridId = -1;
@@ -45,20 +32,20 @@ namespace HeroDefense.Battle
 
         // 网格整体平移。GameConfig.grid_x_offset_cells/grid_y_offset_cells（格·可正可负；
         // x 正=右移，y 正=上移）。在 InitFromScene 把 Grid_Container 整体平移（cell + 子节点一起；
-        // 单位/怪/城墙走 CellToWorld 天然跟随，背景另置不动）。按 container 实例去重，防 TryEnterReady 多次调用累计平移。
+        // 场上单位走 CellToWorld 天然跟随，背景另置不动）。按 container 实例去重，防重复初始化累计平移。
         private static int _shiftedContainerId;
 
         // ============ O(1) 反查格阵缓存（R0 性能前置 2026-06-10）============
-        // WorldToCell 旧实现在 Cells!=null（编辑器手摆 cell = 本项目现实）时走 O(Rows×Cols) 最近邻全扫，
-        // 是怪移动/寻路每帧每怪的热路径炸弹（tech-research §3 风险2）。改为：InitFromScene 后从实际 cell
+        // WorldToCell 在 Cells!=null 时不能每次做 O(Rows×Cols) 最近邻全扫。
+        // InitFromScene 后从实际 cell
         // 反推一次「原点 + 双轴步长」，WorldToCell 走 round 反查（O(1)）。对非正方形 cell / 网格整体偏移都成立，
         // 且 clamp 进界后与最近邻结果等价。仅当 cell 阵列被编辑器手调成非规则时降级回最近邻慢路径。
         private static bool _latticeValid;
         private static float _latOriginX, _latOriginY;   // cell(1,1) 中心世界坐标
         private static float _latStepX, _latStepY;        // 每列 +x / 每行 +y（行 y 通常为负）
 
-        // ============ 三区：Scene2D 每格 zone 优先；旧列阈值作为 fallback ============
-        // 旧规则：己方区左 N 列 / 敌方区右 M 列，由 Lua 经 Battle_SetZones 推入。
+        // ============ 三区：Scene2D 每格 zone 优先；列阈值作为 fallback ============
+        // fallback：己方区左 N 列 / 敌方区右 M 列，由 Lua 经 Battle_SetZones 推入。
         // 新规则：Scene2D Cell 可写 zone=own/enemy/public；存在 zone 表时查询函数优先按每格判定。
         public static int OwnZoneCols = 2;
         public static int EnemyZoneCols = 0;
@@ -68,7 +55,7 @@ namespace HeroDefense.Battle
         private static string[,] _cellZones;  // [row, col] 1-based；null = 走 OwnZoneCols/EnemyZoneCols fallback
         public static bool HasExplicitZones => _cellZones != null;
 
-        /// <summary>从 grid.txt 加载指定 id 的网格配置；幂等多次调用安全。</summary>
+        /// <summary>从 grid.tab 加载指定 id 的网格配置；幂等多次调用安全。</summary>
         public static void InitFromConfig(int gridId)
         {
             try
@@ -76,7 +63,7 @@ namespace HeroDefense.Battle
                 var cm = ConfigManager.Instance;
                 if (cm == null)
                 {
-                    Debug.LogWarning("[GridMap] ConfigManager.Instance 为 null，沿用默认 8×14");
+                    Debug.LogWarning("[GridMap] ConfigManager.Instance 为 null，沿用默认 14×5");
                     ApplyDefaults();
                     return;
                 }
@@ -85,23 +72,21 @@ namespace HeroDefense.Battle
                 var row = cm.GetTableInfo("grid", "id", gridId);
                 if (row == null)
                 {
-                    Debug.LogWarning($"[GridMap] grid.txt 中找不到 id={gridId}，沿用默认 8×14");
+                    Debug.LogWarning($"[GridMap] grid.tab 中找不到 id={gridId}，沿用默认 14×5");
                     ApplyDefaults();
                     return;
                 }
 
-                Rows = cm.GetValue<int>(row, "rows", 8);
-                Cols = cm.GetValue<int>(row, "cols", 10);
-                CellSizeX = cm.GetValue<float>(row, "cell_w", 1.28f);
-                CellSizeY = cm.GetValue<float>(row, "cell_h", 0.96f);
+                Rows = cm.GetValue<int>(row, "rows", 14);
+                Cols = cm.GetValue<int>(row, "cols", 5);
+                CellSizeX = cm.GetValue<float>(row, "cell_w", 1.08f);
+                CellSizeY = cm.GetValue<float>(row, "cell_h", 0.92f);
 
-                // camp_rect 字段是 int[]：row0,col0,w,h（TabParser 已按 int[] 解析）
-                ParseCampRect(row);
                 ClearCellZones();
 
                 CurrentGridId = gridId;
                 _initialized = true;
-                Debug.Log($"[GridMap] InitFromConfig(grid_id={gridId}): {Rows}×{Cols} cell=({CellSizeX}×{CellSizeY}) camp=({CampRectRow0},{CampRectCol0},{CampRectW},{CampRectH})");
+                Debug.Log($"[GridMap] InitFromConfig(grid_id={gridId}): {Rows}×{Cols} cell=({CellSizeX}×{CellSizeY})");
             }
             catch (System.Exception e)
             {
@@ -112,8 +97,7 @@ namespace HeroDefense.Battle
 
         private static void ApplyDefaults()
         {
-            Rows = 8; Cols = 10; CellSizeX = 1.28f; CellSizeY = 0.96f;  // v7 8×10 可玩网格（cell 1.28×0.96）
-            CampRectRow0 = 0; CampRectCol0 = 0; CampRectW = 0; CampRectH = 0;  // v7 双基地在网格外,无 in-grid 营帐
+            Rows = 14; Cols = 5; CellSizeX = 1.08f; CellSizeY = 0.92f;
             ClearCellZones();
             _latticeValid = false;   // 格阵缓存在 InitFromScene 后由 ComputeLattice 重建
             _initialized = true;
@@ -241,48 +225,12 @@ namespace HeroDefense.Battle
             Debug.Log($"[GridMap] runtime relayout cells center=({centerX:F2},{centerY:F2}) cell=({CellSizeX:F2},{CellSizeY:F2}) rows={Rows} cols={Cols}{perspectiveNote}");
         }
 
-        private static void ParseCampRect(Dictionary<string, object> row)
-        {
-            if (!row.TryGetValue("camp_rect", out var raw) || raw == null) return;
-
-            // raw 可能是 int[] / List<int> / List<object> / 逗号字符串"5,1,2,2"
-            int[] parts = null;
-
-            if (raw is int[] arr) parts = arr;
-            else if (raw is List<int> list) parts = list.ToArray();
-            else if (raw is List<object> objList)
-            {
-                parts = new int[objList.Count];
-                for (int i = 0; i < objList.Count; i++)
-                    int.TryParse(System.Convert.ToString(objList[i]), out parts[i]);
-            }
-            else
-            {
-                var s = raw.ToString();
-                if (!string.IsNullOrEmpty(s))
-                {
-                    var split = s.Split(',');
-                    parts = new int[split.Length];
-                    for (int i = 0; i < split.Length; i++)
-                        int.TryParse(split[i].Trim(), out parts[i]);
-                }
-            }
-
-            if (parts != null && parts.Length >= 4)
-            {
-                CampRectRow0 = parts[0];
-                CampRectCol0 = parts[1];
-                CampRectW = parts[2];
-                CampRectH = parts[3];
-            }
-        }
-
         // ============ 场景节点表（编辑器预摆 cell GameObject） ============
         public static CellView[,] Cells;  // [row, col] 1-based，[0,*] 与 [*,0] 弃用
 
         /// <summary>
         /// 从 Game/ui/scene2d 导出的 2D 战场布局构建运行时 CellView。
-        /// 成功后 Cells 与旧场景预摆 CellView 等价，Lua 侧接口不变。
+        /// 成功后 Cells 与场景预摆 CellView 契约一致，Lua 侧接口不变。
         /// </summary>
         public static bool InitFromScene2DLayout()
         {
@@ -332,7 +280,7 @@ namespace HeroDefense.Battle
                 if (result.hasZones) SetCellZones(result.zones);
                 else ClearCellZones();
                 Debug.Log($"[GridMap] InitFromScene3DLayout: {result.path} 加载 {result.found} 个 tile 节点");
-                ComputeLattice();
+                ComputeLattice(expectedNonRectilinear: !result.rectilinear);
                 return result.found > 0;
             }
             catch (System.Exception e)
@@ -360,7 +308,7 @@ namespace HeroDefense.Battle
                     return;
                 }
                 // 整体平移（在读 cell 世界坐标前·防多次累计）：cell + 子节点随容器一起移，
-                // 单位/怪/城墙走 CellToWorld 自然跟随，背景不动。
+                // 场上单位走 CellToWorld 自然跟随，背景不动。
                 float xoff = GridXOffsetWorld();
                 float yoff = GridYOffsetWorld();
                 if ((Mathf.Abs(xoff) > 0.0001f || Mathf.Abs(yoff) > 0.0001f) && _shiftedContainerId != container.GetInstanceID())
@@ -377,8 +325,7 @@ namespace HeroDefense.Battle
                     if (cv.Row >= 1 && cv.Row <= Rows && cv.Col >= 1 && cv.Col <= Cols)
                     {
                         Cells[cv.Row, cv.Col] = cv;
-                        // 启动时按 IsUnlocked / IsCamp 刷新底色（未解锁 alpha=0，解锁 alpha=0.35）
-                        // 否则场景保存的颜色（如 alpha=0.06）会一直显示直到第一次拖拽
+                        // 正式地块由 Scene3D 视觉层绘制，CellView 基底保持透明，只显示交互高亮。
                         cv.RefreshBase();
                         found++;
                     }
@@ -410,7 +357,7 @@ namespace HeroDefense.Battle
                 }
             }
             // 回落 1（R2 收尾 2026-06-11）：lattice 有效时用真实格阵外推（原点+步长，支持网格外格如基地列 col=0/11）。
-            // 旧逻辑原点公式与场景实际坐标差一个平移(场景 origin=(-5.76,2.08))，命中此分支会落到屏幕外。
+            // 公式原点必须以当前布局中心为准，避免缺失节点时落到屏幕外。
             if (_latticeValid)
                 return new Vector2(_latOriginX + (col - 1) * _latStepX, _latOriginY + (row - 1) * _latStepY);
             // 回落 2：无场景 cell 也无 lattice（纯逻辑测试）→ 逻辑原点公式。col=1 起为 X 轴 0；row 越大 worldY 越小
@@ -423,7 +370,7 @@ namespace HeroDefense.Battle
         /// 越界 → row/col 仍按公式输出，调用方需自检 <see cref="IsCellInBounds"/>。</summary>
         /// <summary>InitFromScene 后从实际 cell 反推格阵参数（原点 + 双轴步长），供 WorldToCell O(1) 反查。
         /// 阵列非规则（编辑器手调过个别 cell 位置）→ _latticeValid=false → WorldToCell 降级最近邻。</summary>
-        private static void ComputeLattice()
+        private static void ComputeLattice(bool expectedNonRectilinear = false)
         {
             _latticeValid = false;
             if (Cells == null || Rows < 1 || Cols < 1) return;
@@ -454,7 +401,10 @@ namespace HeroDefense.Battle
                 if (Mathf.Abs(fp.x - predX) > Mathf.Abs(_latStepX) * 0.25f ||
                     Mathf.Abs(fp.y - predY) > Mathf.Abs(_latStepY) * 0.25f)
                 {
-                    Debug.LogWarning("[GridMap] cell 阵列非规则（疑编辑器手调过 cell 位置）→ WorldToCell 走最近邻慢路径");
+                    if (expectedNonRectilinear)
+                        Debug.Log("[GridMap] Scene3D 交错格阵 → WorldToCell 使用最近格反查");
+                    else
+                        Debug.LogWarning("[GridMap] cell 阵列非规则（疑编辑器手调过 cell 位置）→ WorldToCell 走最近邻慢路径");
                     return;
                 }
             }
@@ -463,7 +413,7 @@ namespace HeroDefense.Battle
         }
 
         /// <summary>Unity world XY → 逻辑 (row, col)。规则阵列走 O(1) round 反查（默认快路径）；
-        /// 非规则阵列降级最近邻；无 cell 用 floor 公式。前两路 clamp 进界（与旧最近邻一致）；公式路不 clamp（调用方自检 <see cref="IsCellInBounds"/>）。</summary>
+        /// 非规则阵列降级最近邻；无 cell 用 floor 公式。前两路 clamp 进界；公式路不 clamp（调用方自检 <see cref="IsCellInBounds"/>）。</summary>
         public static (int row, int col) WorldToCell(Vector2 worldXY)
         {
             // 快路径：规则格阵 O(1) round 反查（clamp 进界 → 与最近邻结果等价）
@@ -499,28 +449,17 @@ namespace HeroDefense.Battle
         public static int WorldToCellRow(float worldY) => WorldToCell(new Vector2(0, worldY)).row;
         public static int WorldToCellCol(float worldX) => WorldToCell(new Vector2(worldX, 0)).col;
 
-        // ============ 边界 / 营帐查询 ============
+        // ============ 边界查询 ============
 
         public static bool IsCellInBounds(int row, int col)
         {
             return row >= 1 && row <= Rows && col >= 1 && col <= Cols;
         }
 
-        /// <summary>是否在营帐/基地区（v7：双基地移到网格外 → camp_rect 置空(0,0,0,0) → 恒 false → 80 格全可部署）。
-        /// place_logic / drag_logic / Place_DropUnlockCard 经此判定；空 camp_rect 时不阻挡任何格。
-        /// 怪到达左基地 = 失败：reach 走 lane 末点到达（见 BattleBridge.ResolveWaypointsForLane），不依赖此函数。</summary>
-        public static bool IsCellInCamp(int row, int col)
-        {
-            return row >= CampRectRow0
-                && row < CampRectRow0 + CampRectH
-                && col >= CampRectCol0
-                && col < CampRectCol0 + CampRectW;
-        }
-
         // ============ 三区判定：Scene2D zone map 优先，列阈值 fallback ============
 
         /// <summary>设置三区列数 fallback（己方区左 N 列 / 敌方区右 M 列）。
-        /// 若 Scene2D 已载入每格 zone，则 IsCellIn*Zone 优先读 zone map，本值只作旧地图回退。</summary>
+        /// 若布局已载入每格 zone，则 IsCellIn*Zone 优先读 zone map，本值只作无 zone 回退。</summary>
         public static void InitZones(int ownCols, int enemyCols)
         {
             OwnZoneCols = Mathf.Clamp(ownCols, 0, Cols);
@@ -578,7 +517,7 @@ namespace HeroDefense.Battle
             return ZonePublic;
         }
 
-        /// <summary>己方区：Scene2D zone=own；旧地图 fallback 为左起 OwnZoneCols 列。</summary>
+        /// <summary>己方区：布局 zone=own；无 zone 时回退为左起 OwnZoneCols 列。</summary>
         public static bool IsCellInOwnZone(int row, int col)
         {
             if (!IsCellInBounds(row, col)) return false;
@@ -586,7 +525,7 @@ namespace HeroDefense.Battle
             return col <= OwnZoneCols;
         }
 
-        /// <summary>敌方区：Scene2D zone=enemy；旧地图 fallback 为右起 EnemyZoneCols 列。</summary>
+        /// <summary>敌方区：布局 zone=enemy；无 zone 时回退为右起 EnemyZoneCols 列。</summary>
         public static bool IsCellInEnemyZone(int row, int col)
         {
             if (!IsCellInBounds(row, col)) return false;
@@ -594,7 +533,7 @@ namespace HeroDefense.Battle
             return EnemyZoneCols > 0 && col > Cols - EnemyZoneCols;
         }
 
-        /// <summary>公共区：Scene2D zone=public；旧地图 fallback 为中间（非己方、非敌方）。</summary>
+        /// <summary>公共区：布局 zone=public；无 zone 时回退为中间（非己方、非敌方）。</summary>
         public static bool IsCellInPublicZone(int row, int col)
             => IsCellInBounds(row, col) && !IsCellInOwnZone(row, col) && !IsCellInEnemyZone(row, col);
 

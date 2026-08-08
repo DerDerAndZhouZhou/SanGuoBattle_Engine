@@ -10,24 +10,15 @@ using XLua;
 namespace HeroDefense.Battle
 {
     /// <summary>
-    /// Lua → C# Battle 桥（v3 design.md §4.2.1）。
+    /// Lua → C# 战场表现桥。
     ///
     /// 设计原则（CLAUDE.md §1.1 + §6）：
     ///   - 全 static，便于 Lua 端走 `CS.HeroDefense.Battle.BattleBridge.XXX()` 或经 LuaHost 注入的 Battle_* 全局函数
     ///   - **不写业务**（不判断"该不该 spawn"，仅执行）
-    ///   - 句柄表 long → UnitView / EnemyMover / ProjectileTicker，Lua 仅持 handle
+    ///   - 句柄表 long → UnitView / ProjectileTicker，Lua 仅持 handle
     ///   - tuple 拆分避 xLua delegate userdata 坑（CLAUDE.md §10 R-V8）：
     ///       Vector2 / (row,col) 返回 → 拆为 _X / _Y / _Row / _Col 多个标量函数
     ///   - SpawnUnit / DestroyUnit 同步维护 HitFeedback.RegisterHandle / UnregisterHandle（Agent E 表现层句柄表）
-    ///
-    /// 18 个方法分组：
-    ///   单位 5：SpawnUnit / DestroyUnit / SetSprite / PlayAnim / SetWorldPosition
-    ///   敌人 3：SpawnEnemy / SetEnemyHpBar / SetEnemySpeed
-    ///   投射物 1：SpawnProjectile
-    ///   网格 1：SetCellHighlight
-    ///   坐标 5 拆分：CellToWorldX/Y / ScreenToCellRow/Col / CalcSortingOrder
-    ///   边界 3：IsCellInBounds / IsCellInPlayerArea / IsCellInCamp
-    ///   时间 1：SetTimeScale
     /// </summary>
 #if XLUA
     [LuaCallCSharp]
@@ -37,9 +28,18 @@ namespace HeroDefense.Battle
         // ============ 句柄表 ============
         private static long _handleCounter = 1;
         private static readonly Dictionary<long, UnitView> _units = new Dictionary<long, UnitView>();
-        private static readonly Dictionary<long, EnemyMover> _enemies = new Dictionary<long, EnemyMover>();
-        // 2026-06-30 — 怪物身体基准缩放缓存（按 idle 算一次·切动作复用·见 FitEnemyToCell）。
-        private static readonly Dictionary<long, float> _enemyFitScale = new Dictionary<long, float>();
+        // 语义朝向与 SpriteRenderer.flipX 分离：原生 *_left 帧本身朝左但 flipX=false，
+        // 投射物与死亡选态仍必须知道业务请求的真实左右。
+        private static readonly Dictionary<long, bool> _visualFaceRight =
+            new Dictionary<long, bool>();
+        private static readonly HashSet<long> _missingStatusViewWarnings =
+            new HashSet<long>();
+        private const int UnitTeamOwn = 0;
+        private const int UnitTeamEnemy = 1;
+        private static readonly HashSet<int> _invalidUnitSpawnTeamsWarned = new HashSet<int>();
+        private const int RuntimeOverlaySlotCount = 4;
+        private static readonly Dictionary<long, string[]> _unitOverlaySlots =
+            new Dictionary<long, string[]>();
         private static readonly Dictionary<long, ProjectileTicker> _projectiles = new Dictionary<long, ProjectileTicker>();
 
         // Step 11 投射物池：上限 30（GameConfig.max_projectiles）
@@ -61,7 +61,14 @@ namespace HeroDefense.Battle
         private static readonly Dictionary<int, Rect> _spriteVisibleRectCache = new Dictionary<int, Rect>();
         private const float HP_BAR_WIDTH = 0.72f;
         private const float HP_BAR_HEIGHT = 0.09f;
-        private const float HP_BAR_LOCAL_Y = 1.78f;
+        private const float STATUS_BAR_DUAL_HEIGHT = 0.065f;
+        private const float STATUS_BAR_ROW_OFFSET = 0.0475f;
+        private const float HP_BAR_LOCAL_Y = 1.78f;   // 兜底：无 baseSr 时用（旧全尺寸精灵头顶经验值）
+        private const float HP_BAR_GAP = 0.06f;        // 血条置于精灵渲染顶部之上的小间隙
+        private static readonly Color HeroStatusColor =
+            new Color(0.84f, 0.26f, 0.20f, 1f);
+        private static readonly Color TroopStatusColor =
+            new Color(0.28f, 0.68f, 0.34f, 1f);
         private static Sprite GetOrCreateWhitePixelSprite(bool leftPivot)
         {
             ref var cache = ref _whitePixelSpriteCenter;
@@ -102,7 +109,12 @@ namespace HeroDefense.Battle
         //              使 unit 血条在 Tower 层、enemy 血条在 Enemy 层，各自盖住本体。
         //   localY   — 兼容旧签名；实际使用固定 HP_BAR_LOCAL_Y。
         //   fillColor— 进度条颜色（友军绿 / 敌军红）。
-        private static GameObject BuildHpBar(GameObject root, SpriteRenderer baseSr, float localY, Color fillColor)
+        private static GameObject BuildHpBar(
+            GameObject root,
+            SpriteRenderer baseSr,
+            float localY,
+            Color fillColor,
+            bool dual = false)
         {
             int layerId = baseSr != null ? baseSr.sortingLayerID : 0;
             int baseOrder = baseSr != null ? baseSr.sortingOrder : 0;
@@ -127,57 +139,152 @@ namespace HeroDefense.Battle
             var hpFill = new GameObject("fill", typeof(SpriteRenderer));
             hpFill.transform.SetParent(hpBar.transform, false);
             var fillSr = hpFill.GetComponent<SpriteRenderer>();
-            bool ally = fillColor.g >= fillColor.r;
-            var fillSprite = ally
-                ? LoadHpBarSprite("resources/art/ui/hp_bar/hp_bar_fill_ally.png", true, ref _hpBarFillAllySprite)
-                : LoadHpBarSprite("resources/art/ui/hp_bar/hp_bar_fill_enemy.png", true, ref _hpBarFillEnemySprite);
-            bool fillUsesAsset = fillSprite != null;
-            fillSr.sprite = fillUsesAsset ? fillSprite : GetOrCreateWhitePixelSprite(true);
-            fillSr.color = fillUsesAsset ? Color.white : fillColor;
+            fillSr.sprite = GetOrCreateWhitePixelSprite(true);
+            fillSr.color = dual ? HeroStatusColor : fillColor;
             fillSr.sortingLayerID = layerId;
             fillSr.sortingOrder = baseOrder + 1001;
+
+            if (dual)
+            {
+                var troopBg = new GameObject("troop_bg", typeof(SpriteRenderer));
+                troopBg.transform.SetParent(hpBar.transform, false);
+                var troopBgSr = troopBg.GetComponent<SpriteRenderer>();
+                troopBgSr.sprite = bgUsesAsset
+                    ? bgSprite
+                    : GetOrCreateWhitePixelSprite(false);
+                troopBgSr.color = bgUsesAsset
+                    ? Color.white
+                    : new Color(0f, 0f, 0f, 0.9f);
+                troopBgSr.sortingLayerID = layerId;
+                troopBgSr.sortingOrder = baseOrder + 1002;
+
+                var troopFill = new GameObject(
+                    "troop_fill",
+                    typeof(SpriteRenderer));
+                troopFill.transform.SetParent(hpBar.transform, false);
+                var troopFillSr =
+                    troopFill.GetComponent<SpriteRenderer>();
+                troopFillSr.sprite = GetOrCreateWhitePixelSprite(true);
+                troopFillSr.color = TroopStatusColor;
+                troopFillSr.sortingLayerID = layerId;
+                troopFillSr.sortingOrder = baseOrder + 1003;
+            }
+
             LayoutHpBar(hpBar.transform, baseSr);
             hpBar.SetActive(true);
             return hpBar;
+        }
+
+        private static float LayoutHpBarRow(
+            Transform bg,
+            Transform fill,
+            SpriteRenderer baseSr,
+            float centerY,
+            float height,
+            int orderOffset)
+        {
+            float oldMax =
+                bg != null
+                    ? Mathf.Max(0.0001f, bg.localScale.x)
+                    : 1f;
+            float pct = fill != null
+                ? Mathf.Clamp01(fill.localScale.x / oldMax)
+                : 1f;
+            var bgSr =
+                bg != null
+                    ? bg.GetComponent<SpriteRenderer>()
+                    : null;
+            var fillSr =
+                fill != null
+                    ? fill.GetComponent<SpriteRenderer>()
+                    : null;
+            var bgScale = ScaleForWorldSize(
+                bgSr != null ? bgSr.sprite : null,
+                HP_BAR_WIDTH,
+                height);
+            var fillScale = ScaleForWorldSize(
+                fillSr != null ? fillSr.sprite : null,
+                HP_BAR_WIDTH,
+                height);
+            if (bg != null)
+            {
+                bg.localPosition =
+                    new Vector3(0f, centerY, 0f);
+                bg.localScale = bgScale;
+            }
+            if (fill != null)
+            {
+                fill.localPosition = new Vector3(
+                    -HP_BAR_WIDTH * 0.5f,
+                    centerY,
+                    0f);
+                fill.localScale = new Vector3(
+                    fillScale.x * pct,
+                    fillScale.y,
+                    1f);
+            }
+
+            int layerId =
+                baseSr != null ? baseSr.sortingLayerID : 0;
+            int baseOrder =
+                baseSr != null ? baseSr.sortingOrder : 0;
+            if (bgSr != null)
+            {
+                bgSr.sortingLayerID = layerId;
+                bgSr.sortingOrder = baseOrder + orderOffset;
+            }
+            if (fillSr != null)
+            {
+                fillSr.sortingLayerID = layerId;
+                fillSr.sortingOrder =
+                    baseOrder + orderOffset + 1;
+            }
+            return fillScale.x;
         }
 
         internal static float LayoutHpBar(Transform hpBar, SpriteRenderer baseSr)
         {
             if (hpBar == null) return 1f;
             var lp = hpBar.localPosition;
-            hpBar.localPosition = new Vector3(0f, HP_BAR_LOCAL_Y, lp.z);
-
+            // 自适应血条高度：置于精灵实际渲染顶部略上方，随 unit_screen_scale 等缩放自动跟随。
+            //   旧固定 HP_BAR_LOCAL_Y=1.78 是全尺寸精灵的头顶经验值；缩放后精灵变矮，固定值会让血条飘高。
+            //   精灵帧高固定（运行图统一），bounds.max.y 不随切帧漂移。
             var bg = hpBar.Find("bg");
             var fill = hpBar.Find("fill");
-            float oldMax = bg != null ? Mathf.Max(0.0001f, bg.localScale.x) : 1f;
-            float pct = 1f;
-            if (fill != null) pct = Mathf.Clamp01(fill.localScale.x / oldMax);
-
-            var bgSr = bg != null ? bg.GetComponent<SpriteRenderer>() : null;
-            var fillSr = fill != null ? fill.GetComponent<SpriteRenderer>() : null;
-            var bgScale = ScaleForWorldSize(bgSr != null ? bgSr.sprite : null, HP_BAR_WIDTH, HP_BAR_HEIGHT);
-            var fillScale = ScaleForWorldSize(fillSr != null ? fillSr.sprite : null, HP_BAR_WIDTH, HP_BAR_HEIGHT);
-            if (bg != null) bg.localScale = bgScale;
-            if (fill != null)
+            var troopBg = hpBar.Find("troop_bg");
+            var troopFill = hpBar.Find("troop_fill");
+            bool dual = troopBg != null
+                && troopFill != null
+                && troopBg.gameObject.activeSelf
+                && troopFill.gameObject.activeSelf;
+            float barY = HP_BAR_LOCAL_Y;
+            if (baseSr != null && baseSr.sprite != null && hpBar.parent != null)
             {
-                fill.localPosition = new Vector3(-HP_BAR_WIDTH * 0.5f, 0f, 0f);
-                fill.localScale = new Vector3(fillScale.x * pct, fillScale.y, 1f);
+                barY = baseSr.bounds.max.y
+                    - hpBar.parent.position.y
+                    + HP_BAR_GAP
+                    + (dual ? STATUS_BAR_ROW_OFFSET : 0f);
             }
+            hpBar.localPosition = new Vector3(0f, barY, lp.z);
 
-            int layerId = baseSr != null ? baseSr.sortingLayerID : 0;
-            int baseOrder = baseSr != null ? baseSr.sortingOrder : 0;
-            if (bgSr != null)
+            float heroFullScale = LayoutHpBarRow(
+                bg,
+                fill,
+                baseSr,
+                dual ? STATUS_BAR_ROW_OFFSET : 0f,
+                dual ? STATUS_BAR_DUAL_HEIGHT : HP_BAR_HEIGHT,
+                1000);
+            if (dual)
             {
-                bgSr.sortingLayerID = layerId;
-                bgSr.sortingOrder = baseOrder + 1000;
+                LayoutHpBarRow(
+                    troopBg,
+                    troopFill,
+                    baseSr,
+                    -STATUS_BAR_ROW_OFFSET,
+                    STATUS_BAR_DUAL_HEIGHT,
+                    1002);
             }
-            if (fillSr != null)
-            {
-                fillSr.sortingLayerID = layerId;
-                fillSr.sortingOrder = baseOrder + 1001;
-            }
-
-            return fillScale.x;
+            return heroFullScale;
         }
 
         internal static Rect GetSpriteVisibleLocalRect(Sprite sprite)
@@ -294,18 +401,18 @@ namespace HeroDefense.Battle
         {
             foreach (var kv in _units)
             {
+                ClearHandleAnimationState(kv.Key);
+                var squad = kv.Value != null
+                    ? kv.Value.GetComponent<SquadVisualController>()
+                    : null;
+                if (squad != null) squad.Clear();
                 if (kv.Value != null) Object.Destroy(kv.Value.gameObject);
                 try { HitFeedback.UnregisterHandle(kv.Key); } catch { /* silent */ }
             }
             _units.Clear();
 
-            foreach (var kv in _enemies)
-            {
-                if (kv.Value != null) Object.Destroy(kv.Value.gameObject);
-                try { HitFeedback.UnregisterHandle(kv.Key); } catch { /* silent */ }
-            }
-            _enemies.Clear();
-            _enemyFitScale.Clear();
+            _unitOverlaySlots.Clear();
+            _missingStatusViewWarnings.Clear();
 
             foreach (var kv in _projectiles)
             {
@@ -332,8 +439,31 @@ namespace HeroDefense.Battle
         /// </summary>
         public static long Battle_SpawnUnit(int npcId, int row, int col)
         {
+            return SpawnUnitInternal(npcId, row, col, UnitTeamOwn);
+        }
+
+        /// <summary>
+        /// 实例化带运行时敌我阵营的 UnitView。
+        /// team=0 为己方（Tower 层/绿血条），team=1 为敌方（Enemy 层/红血条）。
+        /// 业务层仍以 own/enemy 表达，int 仅作为 Lua→C# 桥接协议。
+        /// </summary>
+        public static long Battle_SpawnUnitForTeam(int npcId, int row, int col, int team)
+        {
+            if (team != UnitTeamOwn && team != UnitTeamEnemy)
+            {
+                if (_invalidUnitSpawnTeamsWarned.Add(team))
+                    Debug.LogWarning($"[BattleBridge] Battle_SpawnUnitForTeam team 非法：{team}（仅支持 0=own / 1=enemy）");
+                return 0;
+            }
+
+            return SpawnUnitInternal(npcId, row, col, team);
+        }
+
+        private static long SpawnUnitInternal(int npcId, int row, int col, int team)
+        {
             try
             {
+                bool isEnemy = team == UnitTeamEnemy;
                 var go = new GameObject($"Unit_{npcId}_h?");
                 var wp = GridMap.CellToWorld(row, col);
                 go.transform.position = new Vector3(wp.x, wp.y, 0f);
@@ -342,11 +472,15 @@ namespace HeroDefense.Battle
                 var spriteRoot = new GameObject("sprite_root");
                 spriteRoot.transform.SetParent(go.transform, false);
                 var sr = spriteRoot.AddComponent<SpriteRenderer>();
-                sr.sortingLayerName = HDSortingLayers.Tower;
+                sr.sortingLayerName = isEnemy ? HDSortingLayers.Enemy : HDSortingLayers.Tower;
                 sr.sortingOrder = GridSortingService.CalcSortingOrderForRow(row);
 
-                // T203/T214 hp_bar（2026-06-03 抽 BuildHpBar 复用）：友军绿，头顶 0.4。
-                BuildHpBar(go, sr, 0.4f, new Color(0.2f, 1f, 0.2f, 1f));
+                // T203/T214 hp_bar（2026-06-03 抽 BuildHpBar 复用）：己方绿、敌方红，头顶 0.4。
+                BuildHpBar(go, sr, 0.4f,
+                    isEnemy
+                        ? new Color(1f, 0.2f, 0.2f, 1f)
+                        : new Color(0.2f, 1f, 0.2f, 1f),
+                    dual: true);
 
                 // shadow 占位子节点（UnitView.SetShadow 用），暂用空 GameObject
                 var shadow = new GameObject("shadow");
@@ -361,8 +495,12 @@ namespace HeroDefense.Battle
 
                 long h = NextHandle();
                 view.Handle = h;
+                view.Team = team;
                 go.name = $"Unit_{npcId}_h{h}";
                 _units[h] = view;
+                _missingStatusViewWarnings.Remove(h);
+                _visualFaceRight[h] = !isEnemy;
+                view.SetFacing(!isEnemy);
 
                 // Round 12 Issue 1/4 — 按 occupy 形状重定位 sprite_root + 重设 collider，
                 // 使 sprite 覆盖整个 w×h 占位格、点任意占位格都能起手拖。
@@ -376,7 +514,7 @@ namespace HeroDefense.Battle
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"[BattleBridge] Battle_SpawnUnit 失败: {e.Message}");
+                Debug.LogError($"[BattleBridge] SpawnUnit 失败（team={team}）: {e.Message}");
                 return 0;
             }
         }
@@ -384,18 +522,16 @@ namespace HeroDefense.Battle
         public static void Battle_DestroyUnit(long handle)
         {
             if (handle == 0) return;
+            ClearHandleAnimationState(handle);
             if (_units.TryGetValue(handle, out var view))
             {
                 _units.Remove(handle);
+                var squad = view != null
+                    ? view.GetComponent<SquadVisualController>()
+                    : null;
+                if (squad != null) squad.Clear();
                 try { HitFeedback.UnregisterHandle(handle); } catch { /* silent */ }
                 if (view != null && view.gameObject != null) Object.Destroy(view.gameObject);
-            }
-            else if (_enemies.TryGetValue(handle, out var em))
-            {
-                _enemies.Remove(handle);
-                _enemyFitScale.Remove(handle);
-                try { HitFeedback.UnregisterHandle(handle); } catch { /* silent */ }
-                if (em != null && em.gameObject != null) Object.Destroy(em.gameObject);
             }
             else if (_projectiles.TryGetValue(handle, out var p))
             {
@@ -404,7 +540,121 @@ namespace HeroDefense.Battle
             }
         }
 
-        // ============ 2026-05-29 Q1 — npc.tab.anim_type 反查 ============
+        private static bool TryGetSquadController(
+            long rootHandle,
+            bool create,
+            out SquadVisualController controller)
+        {
+            controller = null;
+            if (!_units.TryGetValue(rootHandle, out var view) || view == null) return false;
+            controller = view.GetComponent<SquadVisualController>();
+            if (controller == null && create)
+                controller = view.gameObject.AddComponent<SquadVisualController>();
+            return controller != null;
+        }
+
+        /// <summary>将兵种表现绑定到已有英雄根；不会新增任何公开单位 handle。</summary>
+        public static bool Battle_SquadBind(long rootHandle, int troopNpcId, int team)
+        {
+            return TryGetSquadController(rootHandle, true, out var controller)
+                && controller.Bind(troopNpcId, team);
+        }
+
+        public static bool Battle_SquadSetFormation(
+            long rootHandle,
+            int visualCount,
+            string facing,
+            int reflowMs)
+        {
+            return TryGetSquadController(rootHandle, false, out var controller)
+                && controller.SetFormation(visualCount, facing, reflowMs);
+        }
+
+        public static bool Battle_SquadPlayState(
+            long rootHandle,
+            string stateName,
+            float speedMult)
+        {
+            return TryGetSquadController(rootHandle, false, out var controller)
+                && controller.PlayState(stateName, speedMult);
+        }
+
+        public static bool Battle_SquadPlayAttack(
+            long rootHandle,
+            string stateName,
+            float speedMult,
+            long targetHandle,
+            string projectileKey,
+            int pulseId)
+        {
+            return TryGetSquadController(rootHandle, false, out var controller)
+                && controller.PlayAttack(
+                    stateName,
+                    speedMult,
+                    targetHandle,
+                    projectileKey,
+                    pulseId);
+        }
+
+        public static bool Battle_SquadApplyCasualties(
+            long rootHandle,
+            int newVisualCount,
+            int deathVisualCount,
+            string sourceDirection,
+            string deathState,
+            int reflowMs,
+            int deathHoldMs)
+        {
+            return TryGetSquadController(rootHandle, false, out var controller)
+                && controller.ApplyCasualties(
+                    newVisualCount,
+                    deathVisualCount,
+                    sourceDirection,
+                    deathState,
+                    reflowMs,
+                    deathHoldMs);
+        }
+
+        public static bool Battle_SquadRefill(
+            long rootHandle,
+            int newVisualCount,
+            int fadeMs,
+            string stateName)
+        {
+            return TryGetSquadController(rootHandle, false, out var controller)
+                && controller.Refill(newVisualCount, fadeMs, stateName);
+        }
+
+        public static bool Battle_SquadDetachHeroAndRetreat(
+            long rootHandle,
+            string deathState,
+            int deathHoldMs)
+        {
+            return TryGetSquadController(rootHandle, false, out var controller)
+                && controller.DetachHeroAndRetreat(deathState, deathHoldMs);
+        }
+
+        public static int Battle_SquadGetVisualCount(long rootHandle)
+        {
+            return TryGetSquadController(rootHandle, false, out var controller)
+                ? controller.GetVisualCount()
+                : 0;
+        }
+
+        public static int Battle_SquadGetGhostCount(long rootHandle)
+        {
+            return TryGetSquadController(rootHandle, false, out var controller)
+                ? controller.GetGhostCount()
+                : 0;
+        }
+
+        public static void Battle_SquadClear(long rootHandle)
+        {
+            if (TryGetSquadController(rootHandle, false, out var controller))
+                controller.Clear();
+        }
+
+        // npc.tab.anim_type 反查。
         // 查不到默认 "atFrame"。Spine 路径目前为 stub（fallback frame），后续接 spine-unity 替换。
         // 注意 Enum_ANIM_TYPE 列由 TabParser/EnumRegistry 转成 int 存储（atFrame=1 / atSpine=2），不是 string。
         private const int ANIM_TYPE_FRAME = 1;
@@ -424,10 +674,46 @@ namespace HeroDefense.Battle
             catch { return "atFrame"; }
         }
 
-        // ============ Round 12 — occupy 形状反查（Issue 1/4） ============
-        // npc.txt occupy_id → occupy.txt width/height。查不到任一环节都回落 1×1。
-        // 注：这是渲染层几何（collider / sprite 包围盒）所需的底层信息，与 ResolveWaypointsForLane
-        //     / EnsureProjectilePoolConfig 同属 BattleBridge 已有的"spawn 时读配置"模式。
+        /// <summary>
+        /// 仅供 SquadVisualController 创建无句柄兵模时读取 NPC 的表现元数据。
+        /// 该入口不会注册单位、创建碰撞体或触及 Lua/Match。
+        /// </summary>
+        internal static bool TryGetVisualNpcInfo(
+            int npcId,
+            out string baseKey,
+            out string animType)
+        {
+            baseKey = string.Empty;
+            animType = "atFrame";
+            try
+            {
+                var cm = ConfigManager.Instance;
+                if (cm == null) return false;
+                cm.LoadIfNeeded();
+                var npcRow = cm.GetTableInfo("npc", "id", npcId);
+                if (npcRow == null) return false;
+                baseKey = cm.GetValue<string>(npcRow, "sprite_key", string.Empty);
+                animType = ResolveAnimType(npcId);
+                return !string.IsNullOrEmpty(baseKey);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>纯表现投射物只读取目标根 Transform，不暴露 UnitView 或 handle 表给 Lua。</summary>
+        internal static bool TryGetUnitVisualTransform(long handle, out Transform transform)
+        {
+            transform = null;
+            if (!_units.TryGetValue(handle, out var view) || view == null) return false;
+            transform = view.transform;
+            return transform != null;
+        }
+
+        // npc.tab occupy_id → occupy.tab width/height。查不到任一环节都回落 1×1。
+        // 注：这是渲染层几何（collider / sprite 包围盒）所需的底层信息，
+        //     与 EnsureProjectilePoolConfig 同属 BattleBridge 已有的"spawn 时读配置"模式。
         private static (int w, int h) ResolveFootprint(int npcId)
         {
             try
@@ -458,7 +744,7 @@ namespace HeroDefense.Battle
         // 帧数按文件实际存在自动探测（{base}_{state}_{i}.png 从 0 递增到首个缺失），不再硬编码 —
         // 美术每个状态的帧数由 art_gen 按 roster 生成，可能各不相同。
         private static readonly Dictionary<string, Sprite[]> _animFrameCache = new Dictionary<string, Sprite[]>();
-        private const int ANIM_MAX_FRAMES = 16;  // 2026-05-29 (Q2): 单个 state 探测上限 16 帧（GetAnimFrames 是 per-state 调用：idle 一次、attack 一次...）。实际帧数仍按文件自动检测（首个缺失帧停止），美术 8 帧就播 8 帧，16 帧就播 16 帧。一个角色 6 状态总帧数上限 96
+        private const int ANIM_MAX_FRAMES = 16;  // 单 state 最多 16 帧；现行十态合同为 10×16=160 帧，仍按文件实际存在数量探测。
 
         // anim json v1：仅描述扁平帧，按 base key 进程内缓存。null 值同时缓存“文件不存在/文件无效”，
         // 避免每次播放重复触碰热更文件系统；进程重启后自然重读。
@@ -500,6 +786,13 @@ namespace HeroDefense.Battle
 
         private static readonly Dictionary<string, AnimJsonDefinition> _animJsonCache =
             new Dictionary<string, AnimJsonDefinition>();
+        private static readonly HashSet<string> _bundleMissingStateWarnings = new HashSet<string>();
+        private static readonly HashSet<string> _bundleBuildWarnings = new HashSet<string>();
+        // 动画时序查询必须独立于场上对象和播放回调；此表只去重兼容 fallback 的提示。
+        private static readonly HashSet<string> _animMetadataWarnings = new HashSet<string>();
+        private static readonly HashSet<string> _formalStatePlaceholderWarnings = new HashSet<string>();
+        private static readonly HashSet<string> _runtimeOverlayWarnings = new HashSet<string>();
+        private static readonly HashSet<string> _runtimeOverlayApiWarnings = new HashSet<string>();
 
         private static string NormalizeAnimBaseKey(string baseKey)
         {
@@ -551,6 +844,346 @@ namespace HeroDefense.Battle
             _animJsonCache[normalizedBaseKey] = null;
             Debug.LogWarning($"[BattleBridge] anim json 无效，整文件回落均摊（{path}）：{reason}");
             return null;
+        }
+
+        // 仅保留历史调用方的右向别名。新 Match 域不再生成这些名字；不能把任意方向
+        // 后缀剥成基础状态，否则会把缺失的正式动作静默伪装成另一个方向。
+        private static string NormalizeActionStateAlias(string stateName)
+        {
+            if (stateName == "walk_right") return "walk";
+            if (stateName == "attack_right") return "attack";
+            if (stateName == "die_right") return "die";
+            return stateName;
+        }
+
+        /// <summary>供无句柄兵模复用同一套白名单别名，不开放泛方向回退。</summary>
+        internal static string NormalizeVisualActionState(string stateName)
+        {
+            return NormalizeActionStateAlias(stateName);
+        }
+
+        private static bool IsFormalActionState(string stateName)
+        {
+            return stateName == "idle_down"
+                || stateName == "combat_idle"
+                || stateName == "combat_idle_left"
+                || stateName == "walk"
+                || stateName == "walk_left"
+                || stateName == "walk_up"
+                || stateName == "walk_down"
+                || stateName == "attack"
+                || stateName == "attack_left"
+                || stateName == "die"
+                || stateName == "die_left";
+        }
+
+        // 这是唯一允许旧动画数据层使用的状态映射。它不适用于 idle_down，也不为
+        // walk/attack/die 的左、上、下方向补帧或镜像。
+        private static string LegacyPackageState(string semanticStateName)
+        {
+            if (semanticStateName == "combat_idle") return "idle";
+            if (semanticStateName == "combat_idle_left") return "idle_left";
+            return null;
+        }
+
+        private static bool TryResolveBundleState(
+            AnimBundle bundle,
+            string requestedStateName,
+            out BundleState state,
+            out string resolvedStateName)
+        {
+            state = null;
+            resolvedStateName = NormalizeActionStateAlias(requestedStateName);
+            if (bundle == null || string.IsNullOrEmpty(resolvedStateName)) return false;
+            if (bundle.TryGetState(resolvedStateName, out state)) return true;
+
+            string legacyStateName = LegacyPackageState(resolvedStateName);
+            if (legacyStateName != null && bundle.TryGetState(legacyStateName, out state))
+            {
+                resolvedStateName = legacyStateName;
+                return true;
+            }
+            return false;
+        }
+
+        private static bool TryResolveTimedState(
+            AnimJsonDefinition definition,
+            string requestedStateName,
+            out AnimJsonState state,
+            out string resolvedStateName)
+        {
+            state = null;
+            resolvedStateName = NormalizeActionStateAlias(requestedStateName);
+            if (definition == null || string.IsNullOrEmpty(resolvedStateName)) return false;
+            if (definition.States.TryGetValue(resolvedStateName, out state)) return true;
+
+            string legacyStateName = LegacyPackageState(resolvedStateName);
+            if (legacyStateName != null && definition.States.TryGetValue(legacyStateName, out state))
+            {
+                resolvedStateName = legacyStateName;
+                return true;
+            }
+            return false;
+        }
+
+        private static bool TryGetCompatibleFrameStorage(
+            string baseKey,
+            string requestedStateName,
+            out bool usesAtlas,
+            out string resolvedStateName)
+        {
+            resolvedStateName = NormalizeActionStateAlias(requestedStateName);
+            if (TryGetFrameStorage(baseKey, resolvedStateName, out usesAtlas)) return true;
+
+            string legacyStateName = LegacyPackageState(resolvedStateName);
+            if (legacyStateName != null && TryGetFrameStorage(baseKey, legacyStateName, out usesAtlas))
+            {
+                resolvedStateName = legacyStateName;
+                return true;
+            }
+            usesAtlas = false;
+            return false;
+        }
+
+        private static bool TryGetCompatibleFlatFrames(
+            string baseKey,
+            string requestedStateName,
+            out Sprite[] frames,
+            out string resolvedStateName)
+        {
+            resolvedStateName = NormalizeActionStateAlias(requestedStateName);
+            frames = GetAnimFrames(baseKey, resolvedStateName);
+            if (frames.Length > 0) return true;
+
+            string legacyStateName = LegacyPackageState(resolvedStateName);
+            if (legacyStateName != null)
+            {
+                frames = GetAnimFrames(baseKey, legacyStateName);
+                if (frames.Length > 0)
+                {
+                    resolvedStateName = legacyStateName;
+                    return true;
+                }
+            }
+            frames = new Sprite[0];
+            return false;
+        }
+
+        private static void WarnAnimMetadataFallback(
+            string baseKey,
+            string stateName,
+            string eventName,
+            string reason)
+        {
+            string normalizedBaseKey = NormalizeAnimBaseKey(baseKey);
+            string semanticStateName = NormalizeActionStateAlias(stateName);
+            string warningKey = normalizedBaseKey + "|" + semanticStateName + "|" + eventName;
+            if (_animMetadataWarnings.Add(warningKey))
+            {
+                Debug.LogWarning(
+                    $"[BattleBridge] animation metadata fallback (base={normalizedBaseKey}, state={semanticStateName}, event={eventName}): {reason}");
+            }
+        }
+
+        private static bool TryCopyRawDurations(BundleState state, out float[] durations)
+        {
+            durations = new float[0];
+            if (state == null || state.Frames == null || state.Frames.Length == 0) return false;
+            durations = new float[state.Frames.Length];
+            for (int i = 0; i < durations.Length; i++)
+            {
+                float duration = state.Frames[i].Duration;
+                if (duration <= 0f || float.IsNaN(duration) || float.IsInfinity(duration))
+                {
+                    durations = new float[0];
+                    return false;
+                }
+                durations[i] = duration;
+            }
+            return true;
+        }
+
+        private static bool TryCopyRawDurations(AnimJsonState state, out float[] durations)
+        {
+            durations = new float[0];
+            if (state == null || state.Frames == null || state.Frames.Count == 0) return false;
+            durations = new float[state.Frames.Count];
+            for (int i = 0; i < durations.Length; i++)
+            {
+                float duration = state.Frames[i].Dur;
+                if (duration <= 0f || float.IsNaN(duration) || float.IsInfinity(duration))
+                {
+                    durations = new float[0];
+                    return false;
+                }
+                durations[i] = duration;
+            }
+            return true;
+        }
+
+        // 元数据读取不创建或查找场上 GameObject；选择顺序与播放层保持 bundle -> timed json。
+        private static bool TryGetRawStateDurations(
+            string baseKey,
+            string stateName,
+            out float[] durations)
+        {
+            durations = new float[0];
+            string normalizedBaseKey = NormalizeAnimBaseKey(baseKey);
+            if (string.IsNullOrEmpty(normalizedBaseKey) || string.IsNullOrEmpty(stateName))
+                return false;
+
+            if (AnimBundleCache.TryGet(normalizedBaseKey, out var bundle)
+                && TryResolveBundleState(bundle, stateName, out var bundleState, out _)
+                && TryCopyRawDurations(bundleState, out durations))
+                return true;
+
+            var definition = GetAnimJson(normalizedBaseKey);
+            return TryResolveTimedState(definition, stateName, out var timedState, out _)
+                && TryCopyRawDurations(timedState, out durations);
+        }
+
+        private static bool TryFindEventTimelineIndex(
+            BundleState state,
+            string eventName,
+            out int timelineIndex,
+            out bool exactOne)
+        {
+            timelineIndex = -1;
+            exactOne = false;
+            if (state == null || state.Frames == null || state.Frames.Length == 0) return false;
+            int count = 0;
+            if (state.Events != null)
+            {
+                for (int i = 0; i < state.Events.Length; i++)
+                {
+                    var frameEvent = state.Events[i];
+                    if (!string.Equals(frameEvent.Name, eventName, System.StringComparison.Ordinal)) continue;
+                    count++;
+                    timelineIndex = frameEvent.TimelineIndex;
+                }
+            }
+            exactOne = count == 1
+                && timelineIndex >= 0
+                && timelineIndex < state.Frames.Length;
+            if (!exactOne) timelineIndex = -1;
+            return true;
+        }
+
+        private static bool TryFindEventTimelineIndex(
+            AnimJsonState state,
+            string eventName,
+            out int timelineIndex,
+            out bool exactOne)
+        {
+            timelineIndex = -1;
+            exactOne = false;
+            if (state == null || state.Frames == null || state.Frames.Count == 0) return false;
+            int count = 0;
+            if (state.Events != null)
+            {
+                for (int i = 0; i < state.Events.Count; i++)
+                {
+                    var frameEvent = state.Events[i];
+                    if (!string.Equals(frameEvent.Name, eventName, System.StringComparison.Ordinal)) continue;
+                    count++;
+                    timelineIndex = frameEvent.Frame;
+                }
+            }
+            exactOne = count == 1
+                && timelineIndex >= 0
+                && timelineIndex < state.Frames.Count;
+            if (!exactOne) timelineIndex = -1;
+            return true;
+        }
+
+        private static bool TryGetEventTimelineIndex(
+            string baseKey,
+            string stateName,
+            string eventName,
+            out int timelineIndex,
+            out bool exactOne)
+        {
+            timelineIndex = -1;
+            exactOne = false;
+            string normalizedBaseKey = NormalizeAnimBaseKey(baseKey);
+            if (string.IsNullOrEmpty(normalizedBaseKey)
+                || string.IsNullOrEmpty(stateName)
+                || string.IsNullOrEmpty(eventName))
+                return false;
+
+            if (AnimBundleCache.TryGet(normalizedBaseKey, out var bundle)
+                && TryResolveBundleState(bundle, stateName, out var bundleState, out _))
+                return TryFindEventTimelineIndex(bundleState, eventName, out timelineIndex, out exactOne);
+
+            var definition = GetAnimJson(normalizedBaseKey);
+            if (TryResolveTimedState(definition, stateName, out var timedState, out _))
+                return TryFindEventTimelineIndex(timedState, eventName, out timelineIndex, out exactOne);
+            return false;
+        }
+
+        public static int Battle_GetAnimStateDurationMs(
+            string baseKey,
+            string stateName,
+            int fallbackMs)
+        {
+            if (!TryGetRawStateDurations(baseKey, stateName, out var durations))
+            {
+                WarnAnimMetadataFallback(baseKey, stateName, "duration", "state unavailable");
+                return fallbackMs;
+            }
+
+            double totalSeconds = 0d;
+            for (int i = 0; i < durations.Length; i++) totalSeconds += durations[i];
+            double rawMilliseconds = totalSeconds * 1000d;
+            if (rawMilliseconds <= 0d || rawMilliseconds > int.MaxValue
+                || double.IsNaN(rawMilliseconds) || double.IsInfinity(rawMilliseconds))
+            {
+                WarnAnimMetadataFallback(baseKey, stateName, "duration", "invalid total duration");
+                return fallbackMs;
+            }
+            return (int)System.Math.Round(
+                rawMilliseconds,
+                System.MidpointRounding.AwayFromZero);
+        }
+
+        public static int Battle_GetAnimEventRatioBp(
+            string baseKey,
+            string stateName,
+            string eventName,
+            int fallbackBp)
+        {
+            if (!TryGetRawStateDurations(baseKey, stateName, out var durations)
+                || !TryGetEventTimelineIndex(
+                    baseKey,
+                    stateName,
+                    eventName,
+                    out int timelineIndex,
+                    out bool exactOne)
+                || !exactOne)
+            {
+                WarnAnimMetadataFallback(baseKey, stateName, eventName, "event unavailable or non-unique");
+                return fallbackBp;
+            }
+
+            double total = 0d;
+            double beforeEvent = 0d;
+            for (int i = 0; i < durations.Length; i++)
+            {
+                if (i < timelineIndex) beforeEvent += durations[i];
+                total += durations[i];
+            }
+            if (total <= 0d || double.IsNaN(total) || double.IsInfinity(total))
+            {
+                WarnAnimMetadataFallback(baseKey, stateName, eventName, "invalid total duration");
+                return fallbackBp;
+            }
+
+            int ratioBp = (int)System.Math.Round(
+                beforeEvent / total * 10000d,
+                System.MidpointRounding.AwayFromZero);
+            if (ratioBp < 1) return 1;
+            if (ratioBp > 9999) return 9999;
+            return ratioBp;
         }
 
         private static bool ValidateAnimJson(AnimJsonDefinition definition, string expectedBaseKey, out string reason)
@@ -645,11 +1278,8 @@ namespace HeroDefense.Battle
         // （即使同名扁平帧也并存）都沿用旧 atlas 优先路径，不查 json。
         private static bool ResolvesToAtlasFrames(string baseKey, string state)
         {
-            if (TryGetFrameStorage(baseKey, state, out bool usesAtlas)) return usesAtlas;
-            string baseState = StripDirSuffix(state);
-            if (baseState != state && TryGetFrameStorage(baseKey, baseState, out usesAtlas)) return usesAtlas;
-            if (state != "idle" && TryGetFrameStorage(baseKey, "idle", out usesAtlas)) return usesAtlas;
-            return false;
+            return TryGetCompatibleFrameStorage(baseKey, state, out bool usesAtlas, out _)
+                && usesAtlas;
         }
 
         private static float NormalizeTimedSpeed(float speedMult)
@@ -659,17 +1289,49 @@ namespace HeroDefense.Battle
                 : 1f;
         }
 
+        private static float[] ScaleTimedDurations(float[] rawDurations, float speedMult,
+            out float normalizedMultiplier)
+        {
+            normalizedMultiplier = NormalizeTimedSpeed(speedMult);
+            var durations = new float[rawDurations.Length];
+            bool scaledValid = true;
+            for (int i = 0; i < rawDurations.Length; i++)
+            {
+                double scaled = (double)rawDurations[i] / normalizedMultiplier;
+                if (scaled <= 0d || scaled > float.MaxValue
+                    || double.IsNaN(scaled) || double.IsInfinity(scaled))
+                {
+                    scaledValid = false;
+                    break;
+                }
+                durations[i] = (float)scaled;
+            }
+            if (!scaledValid)
+            {
+                // 极端但为正的倍率导致 float 溢出时按旧兼容语义视为 1。
+                normalizedMultiplier = 1f;
+                for (int i = 0; i < rawDurations.Length; i++)
+                    durations[i] = rawDurations[i];
+            }
+            return durations;
+        }
+
         private static bool TryBuildTimedClip(string baseKey, string stateName, float speedMult,
-            out TimedAnimClip clip)
+            out TimedAnimClip clip, out string playbackStateName)
         {
             clip = null;
+            playbackStateName = NormalizeActionStateAlias(stateName);
             string normalized = NormalizeAnimBaseKey(baseKey);
-            if (string.IsNullOrEmpty(normalized) || string.IsNullOrEmpty(stateName)) return false;
-            if (ResolvesToAtlasFrames(normalized, stateName)) return false;
+            if (string.IsNullOrEmpty(normalized) || string.IsNullOrEmpty(playbackStateName)) return false;
+            if (ResolvesToAtlasFrames(normalized, playbackStateName)) return false;
 
             var definition = GetAnimJson(normalized);
-            if (definition == null || !definition.States.TryGetValue(stateName, out var state))
-                return false; // state 严格命中：不继承方向基础态，也不继承 idle。
+            if (!TryResolveTimedState(
+                    definition,
+                    playbackStateName,
+                    out var state,
+                    out string resourceStateName))
+                return false;
 
             int count = state.Frames.Count;
             var frames = new Sprite[count];
@@ -679,11 +1341,11 @@ namespace HeroDefense.Battle
             {
                 var entry = state.Frames[i];
                 frames[i] = HeroDefense.Engine.Host.LuaHost.LoadSprite(
-                    $"resources/art/{normalized}_{stateName}_{entry.Img}.png", false);
+                    $"resources/art/{normalized}_{resourceStateName}_{entry.Img}.png", false);
                 if (frames[i] == null)
                 {
                     CacheInvalidAnimJson(normalized, AnimJsonPath(normalized),
-                        $"state '{stateName}' frame[{i}] 引用的 img={entry.Img} 不存在");
+                        $"state '{resourceStateName}' frame[{i}] 引用的 img={entry.Img} 不存在");
                     return false;
                 }
                 rawDurations[i] = entry.Dur;
@@ -692,35 +1354,17 @@ namespace HeroDefense.Battle
             if (rawTotal <= 0d || rawTotal > float.MaxValue || double.IsNaN(rawTotal) || double.IsInfinity(rawTotal))
             {
                 CacheInvalidAnimJson(normalized, AnimJsonPath(normalized),
-                    $"state '{stateName}' 总时长非法");
+                    $"state '{resourceStateName}' 总时长非法");
                 return false;
             }
 
-            float mult = NormalizeTimedSpeed(speedMult);
-            var durations = new float[count];
-            bool scaledValid = true;
-            for (int i = 0; i < count; i++)
-            {
-                double scaled = (double)rawDurations[i] / mult;
-                if (scaled <= 0d || scaled > float.MaxValue || double.IsNaN(scaled) || double.IsInfinity(scaled))
-                {
-                    scaledValid = false;
-                    break;
-                }
-                durations[i] = (float)scaled;
-            }
-            if (!scaledValid)
-            {
-                // 极端但为正的倍率导致 float 溢出时按旧兼容语义视为 1，避免播放器收到非法时长。
-                mult = 1f;
-                for (int i = 0; i < count; i++) durations[i] = rawDurations[i];
-            }
+            var durations = ScaleTimedDurations(rawDurations, speedMult, out float mult);
 
             clip = new TimedAnimClip
             {
                 Frames = frames,
                 Durations = durations,
-                Looping = state.Loop,
+                Looping = ResolveStateLooping(playbackStateName, state.Loop),
                 Events = state.Events,
                 RawDurationTotal = (float)rawTotal,
                 SpeedMultiplier = mult,
@@ -728,9 +1372,326 @@ namespace HeroDefense.Battle
             return true;
         }
 
+        private static bool TryBuildBundleClip(AnimBundle bundle, BundleState state, float speedMult,
+            out BundleClip clip, out string reason)
+        {
+            clip = null;
+            reason = null;
+            if (bundle == null || state == null || state.Frames == null || state.Frames.Length == 0)
+            {
+                reason = "bundle/state 为空";
+                return false;
+            }
+
+            int count = state.Frames.Length;
+            var frames = new Sprite[count];
+            var rawDurations = new float[count];
+            for (int i = 0; i < count; i++)
+            {
+                var entry = state.Frames[i];
+                frames[i] = bundle.GetFrameSprite(entry.FramePoolIndex);
+                if (frames[i] == null)
+                {
+                    reason = $"timeline frame[{i}] 帧池引用不可用";
+                    return false;
+                }
+                rawDurations[i] = entry.Duration;
+            }
+
+            var durations = ScaleTimedDurations(rawDurations, speedMult, out _);
+            var entryTimes = new float[count];
+            double total = 0d;
+            for (int i = 0; i < count; i++)
+            {
+                if (total > float.MaxValue)
+                {
+                    reason = "缩放后总时长溢出";
+                    return false;
+                }
+                entryTimes[i] = (float)total;
+                total += durations[i];
+            }
+            if (total <= 0d || total > float.MaxValue
+                || double.IsNaN(total) || double.IsInfinity(total))
+            {
+                reason = "缩放后总时长非法";
+                return false;
+            }
+
+            BundleSelfKey[] selfKeys = null;
+            if (state.SelfKeys != null && state.SelfKeys.Length > 0)
+            {
+                selfKeys = new BundleSelfKey[state.SelfKeys.Length];
+                for (int i = 0; i < selfKeys.Length; i++)
+                {
+                    var source = state.SelfKeys[i];
+                    selfKeys[i] = new BundleSelfKey
+                    {
+                        Time = entryTimes[source.TimelineIndex],
+                        Dx = source.Dx,
+                        Dy = source.Dy,
+                        Alpha = source.Alpha,
+                    };
+                }
+            }
+
+            BundleTrackClip[] tracks = null;
+            if (state.Tracks != null && state.Tracks.Length > 0)
+            {
+                tracks = new BundleTrackClip[state.Tracks.Length];
+                for (int i = 0; i < tracks.Length; i++)
+                {
+                    var sourceTrack = state.Tracks[i];
+                    int cellCount = sourceTrack.Cells.Length;
+                    var track = new BundleTrackClip
+                    {
+                        Sprites = new Sprite[cellCount],
+                        TimelineIndices = new int[cellCount],
+                        Times = new float[cellCount],
+                        Dx = new float[cellCount],
+                        Dy = new float[cellCount],
+                        ScaleX = new float[cellCount],
+                        ScaleY = new float[cellCount],
+                        Alpha = new float[cellCount],
+                        Above = sourceTrack.Above,
+                    };
+
+                    for (int k = 0; k < cellCount; k++)
+                    {
+                        var sourceCell = sourceTrack.Cells[k];
+                        int timelineIndex = sourceCell.TimelineIndex;
+                        track.Sprites[k] = bundle.ResolveTrackSprite(
+                            sourceTrack, sourceCell.FrameIndex);
+                        track.TimelineIndices[k] = timelineIndex;
+                        track.Times[k] = entryTimes[timelineIndex];
+                        track.Dx[k] = sourceCell.Dx;
+                        track.Dy[k] = sourceCell.Dy;
+                        track.ScaleX[k] = sourceCell.ScaleX;
+                        track.ScaleY[k] = sourceCell.ScaleY;
+                        track.Alpha[k] = sourceCell.Alpha;
+                    }
+
+                    int lastTimelineIndex = sourceTrack.Cells[cellCount - 1].TimelineIndex;
+                    track.EndTime = entryTimes[lastTimelineIndex] + durations[lastTimelineIndex];
+                    tracks[i] = track;
+                }
+            }
+
+            clip = new BundleClip
+            {
+                Frames = frames,
+                Durations = durations,
+                Looping = state.Loop,
+                SelfKeys = selfKeys,
+                Tracks = tracks,
+                CanvasW = bundle.CanvasW,
+                CanvasH = bundle.CanvasH,
+                TotalDuration = (float)total,
+                HideHp = state.HideHp,
+            };
+            return true;
+        }
+
+        private static bool TryBuildRuntimeOverlayClip(
+            AnimBundle bundle, BundleState state, float speedMult,
+            out RuntimeOverlayClip clip, out string reason)
+        {
+            clip = null;
+            reason = null;
+            if (bundle == null || state == null || state.Frames == null || state.Frames.Length == 0)
+            {
+                reason = "bundle/state 为空";
+                return false;
+            }
+
+            int count = state.Frames.Length;
+            var frames = new Sprite[count];
+            var rawDurations = new float[count];
+            for (int i = 0; i < count; i++)
+            {
+                var entry = state.Frames[i];
+                frames[i] = bundle.GetFrameSprite(entry.FramePoolIndex);
+                if (frames[i] == null)
+                {
+                    reason = $"timeline frame[{i}] 帧池引用不可用";
+                    return false;
+                }
+                rawDurations[i] = entry.Duration;
+            }
+
+            var durations = ScaleTimedDurations(rawDurations, speedMult, out _);
+            double total = 0d;
+            for (int i = 0; i < durations.Length; i++) total += durations[i];
+            if (total <= 0d || total > float.MaxValue
+                || double.IsNaN(total) || double.IsInfinity(total))
+            {
+                reason = "缩放后总时长非法";
+                return false;
+            }
+
+            clip = new RuntimeOverlayClip
+            {
+                Frames = frames,
+                Durations = durations,
+                Looping = state.Loop,
+                Above = state.Above,
+                TotalDuration = (float)total,
+            };
+            return true;
+        }
+
+        private static RuntimeOverlayClip[] BuildRuntimeOverlayClips(
+            long handle, string resolvedStateName, float speedMult)
+        {
+            if (!_unitOverlaySlots.TryGetValue(handle, out var slots) || slots == null)
+                return null;
+
+            RuntimeOverlayClip[] clips = null;
+            for (int i = 0; i < RuntimeOverlaySlotCount; i++)
+            {
+                string baseKey = slots[i];
+                if (string.IsNullOrEmpty(baseKey)) continue;
+                if (!AnimBundleCache.TryGet(baseKey, out var overlayBundle))
+                {
+                    string warningKey = "bundle|" + baseKey;
+                    if (_runtimeOverlayWarnings.Add(warningKey))
+                    {
+                        Debug.LogWarning(
+                            $"[BattleBridge] 运行时 overlay 包无效，槽位静默跳过（base={baseKey}）");
+                    }
+                    continue;
+                }
+
+                // 精确匹配实际命中的本体状态；overlay 缺状态是正常稀疏数据，不记录 warning。
+                if (!overlayBundle.TryGetState(resolvedStateName, out var overlayState))
+                    continue;
+                if (!TryBuildRuntimeOverlayClip(
+                    overlayBundle, overlayState, speedMult, out var clip, out string reason))
+                {
+                    string warningKey = "clip|" + baseKey + "|" + resolvedStateName;
+                    if (_runtimeOverlayWarnings.Add(warningKey))
+                    {
+                        Debug.LogWarning(
+                            $"[BattleBridge] 运行时 overlay 状态构建失败，槽位静默跳过（base={baseKey}, state={resolvedStateName}）：{reason}");
+                    }
+                    continue;
+                }
+
+                if (clips == null) clips = new RuntimeOverlayClip[RuntimeOverlaySlotCount];
+                clips[i] = clip;
+            }
+            return clips;
+        }
+
+        // 方向态在包内先退基础态（walk_up→walk），与旧链 ResolveAnimFrames 的方向回退语义一致；
+        // 真四方向帧入包后直接命中基础/方向态，不会走到这里。
+        private static bool TryPlayBundleAnim(long handle, SpriteAnimator anim, string stateName,
+            float speedMult)
+        {
+            if (anim == null || string.IsNullOrEmpty(stateName)
+                || !AnimBundleCache.TryGet(anim.SpriteBaseKey, out var bundle))
+                return false;
+
+            string playbackStateName = NormalizeActionStateAlias(stateName);
+            if (!TryResolveBundleState(
+                    bundle,
+                    playbackStateName,
+                    out var state,
+                    out string resourceStateName))
+            {
+                string warningKey = bundle.BaseKey + "|" + playbackStateName;
+                if (_bundleMissingStateWarnings.Add(warningKey))
+                {
+                    Debug.LogWarning(
+                        $"[BattleBridge] 动画包缺 state，当前状态回落旧链（base={bundle.BaseKey}, state={stateName}）");
+                }
+                return false;
+            }
+            ApplyNativeDirectionRendering(handle, playbackStateName);
+
+            if (!TryBuildBundleClip(bundle, state, speedMult, out var clip, out string reason))
+            {
+                string warningKey = bundle.BaseKey + "|" + playbackStateName;
+                if (_bundleBuildWarnings.Add(warningKey))
+                {
+                    Debug.LogWarning(
+                        $"[BattleBridge] 动画包状态构建失败，当前状态回落旧链（base={bundle.BaseKey}, state={stateName}）：{reason}");
+                }
+                return false;
+            }
+            clip.Looping = ResolveStateLooping(playbackStateName, clip.Looping);
+
+            if (state.Events != null && state.Events.Length > 0)
+            {
+                clip.OnFrameEnter = frameIndex =>
+                {
+                    for (int i = 0; i < state.Events.Length; i++)
+                    {
+                        var frameEvent = state.Events[i];
+                        if (frameEvent.TimelineIndex == frameIndex)
+                        {
+                            HeroDefense.Engine.Host.LuaHost.CallGlobal(
+                                "Anim_OnFrameEvent", handle, playbackStateName, frameEvent.Name);
+                        }
+                    }
+                };
+            }
+
+            var runtimeOverlays =
+                BuildRuntimeOverlayClips(handle, resourceStateName, speedMult);
+            anim.PlayBundle(playbackStateName, clip, runtimeOverlays);
+            SetHandleHpBarAnimHidden(handle, state.HideHp);
+            RefreshAnimLayout(handle);
+            return true;
+        }
+
+        private static bool TryGetBundleAnimLength(string baseKey, string stateName, float speedMult,
+            out float duration)
+        {
+            duration = 0f;
+            if (string.IsNullOrEmpty(stateName)
+                || !AnimBundleCache.TryGet(baseKey, out var bundle))
+                return false;
+            string playbackStateName = NormalizeActionStateAlias(stateName);
+            if (!TryResolveBundleState(
+                    bundle,
+                    playbackStateName,
+                    out var state,
+                    out _))
+            {
+                string warningKey = bundle.BaseKey + "|" + playbackStateName;
+                if (_bundleMissingStateWarnings.Add(warningKey))
+                {
+                    Debug.LogWarning(
+                        $"[BattleBridge] 动画包缺 state，当前状态回落旧链（base={bundle.BaseKey}, state={stateName}）");
+                }
+                return false;
+            }
+
+            var rawDurations = new float[state.Frames.Length];
+            for (int i = 0; i < rawDurations.Length; i++)
+                rawDurations[i] = state.Frames[i].Duration;
+            var scaledDurations = ScaleTimedDurations(rawDurations, speedMult, out _);
+
+            double total = 0d;
+            for (int i = 0; i < scaledDurations.Length; i++) total += scaledDurations[i];
+            if (total <= 0d || total > float.MaxValue
+                || double.IsNaN(total) || double.IsInfinity(total))
+                return false;
+            duration = (float)total;
+            return true;
+        }
+
         private static bool TryPlayTimedAnim(long handle, SpriteAnimator anim, string stateName, float speedMult)
         {
-            if (!TryBuildTimedClip(anim.SpriteBaseKey, stateName, speedMult, out var clip)) return false;
+            if (!TryBuildTimedClip(
+                    anim.SpriteBaseKey,
+                    stateName,
+                    speedMult,
+                    out var clip,
+                    out string playbackStateName))
+                return false;
+            ApplyNativeDirectionRendering(handle, playbackStateName);
 
             System.Action<int> onFrameEnter = null;
             if (clip.Events != null && clip.Events.Count > 0)
@@ -743,20 +1704,169 @@ namespace HeroDefense.Battle
                         if (frameEvent.Frame == frameIndex)
                         {
                             HeroDefense.Engine.Host.LuaHost.CallGlobal(
-                                "Anim_OnFrameEvent", handle, stateName, frameEvent.Name);
+                                "Anim_OnFrameEvent", handle, playbackStateName, frameEvent.Name);
                         }
                     }
                 };
             }
 
-            anim.PlayTimed(stateName, clip.Frames, clip.Durations, clip.Looping, onFrameEnter);
+            anim.PlayTimed(playbackStateName, clip.Frames, clip.Durations, clip.Looping, onFrameEnter);
             return true;
+        }
+
+        // ============ 无句柄队伍兵模播放入口 ============
+        // 与英雄根的播放链共用同一套 bundle/timed/flat 解析和正式状态兼容，
+        // 但故意不注册 handle、overlay、HP 状态条或 Anim_OnFrameEvent 回调。
+        private static void ApplyVisualDirectionRendering(
+            SpriteRenderer renderer,
+            string stateName,
+            bool faceRight)
+        {
+            if (renderer == null) return;
+            bool nativeDirectionalState = !string.IsNullOrEmpty(stateName)
+                && (stateName.EndsWith("_left")
+                    || stateName.EndsWith("_right")
+                    || stateName.EndsWith("_up")
+                    || stateName.EndsWith("_down"));
+            renderer.flipX = nativeDirectionalState ? false : !faceRight;
+        }
+
+        private static bool TryPlayVisualBundle(
+            SpriteAnimator anim,
+            SpriteRenderer renderer,
+            string stateName,
+            float speedMult,
+            bool faceRight)
+        {
+            if (anim == null || string.IsNullOrEmpty(stateName)
+                || !AnimBundleCache.TryGet(anim.SpriteBaseKey, out var bundle))
+                return false;
+            string playbackStateName = NormalizeActionStateAlias(stateName);
+            if (!TryResolveBundleState(
+                    bundle,
+                    playbackStateName,
+                    out var state,
+                    out _))
+                return false;
+            if (!TryBuildBundleClip(bundle, state, speedMult, out var clip, out string reason))
+            {
+                string warningKey = "visual|" + bundle.BaseKey + "|" + playbackStateName;
+                if (_bundleBuildWarnings.Add(warningKey))
+                {
+                    Debug.LogWarning(
+                        $"[BattleBridge] visual bundle state build failed (base={bundle.BaseKey}, state={playbackStateName}): {reason}");
+                }
+                return false;
+            }
+            clip.Looping = ResolveStateLooping(playbackStateName, clip.Looping);
+            ApplyVisualDirectionRendering(renderer, playbackStateName, faceRight);
+            anim.PlayBundle(playbackStateName, clip);
+            return true;
+        }
+
+        private static bool TryPlayVisualTimed(
+            SpriteAnimator anim,
+            SpriteRenderer renderer,
+            string stateName,
+            float speedMult,
+            bool faceRight)
+        {
+            if (anim == null
+                || !TryBuildTimedClip(
+                    anim.SpriteBaseKey,
+                    stateName,
+                    speedMult,
+                    out var clip,
+                    out string playbackStateName))
+                return false;
+            ApplyVisualDirectionRendering(renderer, playbackStateName, faceRight);
+            anim.PlayTimed(playbackStateName, clip.Frames, clip.Durations, clip.Looping);
+            return true;
+        }
+
+        private static bool PlayVisualFormalStatePlaceholder(
+            SpriteAnimator anim,
+            SpriteRenderer renderer,
+            string baseKey,
+            string stateName,
+            float speedMult,
+            bool faceRight)
+        {
+            string playbackStateName = NormalizeActionStateAlias(stateName);
+            if (anim == null || !IsFormalActionState(playbackStateName)) return false;
+            string warningKey = NormalizeAnimBaseKey(baseKey) + "|" + playbackStateName;
+            if (_formalStatePlaceholderWarnings.Add(warningKey))
+            {
+                Debug.LogWarning(
+                    $"[BattleBridge] formal animation state missing; using single-frame placeholder (base={NormalizeAnimBaseKey(baseKey)}, state={playbackStateName})");
+            }
+            var placeholder = GetFallbackSprite(baseKey);
+            if (placeholder == null) return false;
+            ApplyVisualDirectionRendering(renderer, playbackStateName, faceRight);
+            anim.Play(
+                playbackStateName,
+                new[] { placeholder },
+                fps: ScaledFps(playbackStateName, speedMult),
+                looping: IsLoopingState(playbackStateName));
+            return true;
+        }
+
+        /// <summary>
+        /// 只供 SquadVisualController 调用的内部播放入口。它不能触发 Lua、不能创建句柄，
+        /// 因此兵模帧事件和假攻击绝不可能反馈为权威伤害。
+        /// </summary>
+        internal static bool PlayVisualAnimation(
+            SpriteAnimator anim,
+            SpriteRenderer renderer,
+            string stateName,
+            float speedMult,
+            bool faceRight)
+        {
+            if (anim == null) return false;
+            string playbackStateName = NormalizeActionStateAlias(stateName);
+            if (string.IsNullOrEmpty(anim.SpriteBaseKey)
+                || string.IsNullOrEmpty(playbackStateName))
+                return false;
+            if (TryPlayVisualBundle(
+                    anim,
+                    renderer,
+                    playbackStateName,
+                    speedMult,
+                    faceRight))
+                return true;
+            if (TryPlayVisualTimed(
+                    anim,
+                    renderer,
+                    playbackStateName,
+                    speedMult,
+                    faceRight))
+                return true;
+            if (TryGetCompatibleFlatFrames(
+                    anim.SpriteBaseKey,
+                    playbackStateName,
+                    out var frames,
+                    out _))
+            {
+                ApplyVisualDirectionRendering(renderer, playbackStateName, faceRight);
+                anim.Play(
+                    playbackStateName,
+                    frames,
+                    fps: ScaledFps(playbackStateName, speedMult),
+                    looping: IsLoopingState(playbackStateName));
+                return true;
+            }
+            return PlayVisualFormalStatePlaceholder(
+                anim,
+                renderer,
+                anim.SpriteBaseKey,
+                playbackStateName,
+                speedMult,
+                faceRight);
         }
 
         private static void RefreshAnimLayout(long handle)
         {
             if (_units.TryGetValue(handle, out var uv) && uv != null) uv.FitSpriteToBlock();
-            else FitEnemyToCell(handle);
         }
 
         /// <summary>按文件实际存在探测并加载某 (baseKey,state) 的全部帧；结果缓存。</summary>
@@ -772,7 +1882,7 @@ namespace HeroDefense.Battle
         private static void PlayAnim_Spine(long handle, SpriteAnimator anim, string stateName, float speedMult)
         {
             long warningHandle = 0;
-            // 保持旧 stub 日志去重：unit 按自身 handle，enemy 因无 UnitView 继续共用 0。
+            // 按 UnitView handle 对 warning 去重。
             if (anim != null && anim.gameObject != null)
             {
                 var view = anim.gameObject.GetComponent<UnitView>();
@@ -783,17 +1893,32 @@ namespace HeroDefense.Battle
                 _spineWarnedHandles.Add(warningHandle);
                 Debug.LogWarning($"[BattleBridge] anim_type=atSpine 配置但 spine-unity SDK 未集成 → 兜底走 frame 路径（key={anim.SpriteBaseKey}, state={stateName}）");
             }
-            // stub fallback 与 atFrame 一致先尝试逐帧时长；无可用 timed clip 才走旧均摊路径。
+            // stub fallback 与 atFrame 一致先尝试 bundle；无可用 bundle 再走 timed/旧均摊路径。
+            if (TryPlayBundleAnim(handle, anim, stateName, speedMult)) return;
             if (TryPlayTimedAnim(handle, anim, stateName, speedMult))
             {
                 RefreshAnimLayout(handle);
                 return;
             }
-            var frames = ResolveAnimFrames(anim.SpriteBaseKey, stateName);
-            if (frames.Length == 0) return;
-            bool looping = IsLoopingState(stateName);
-            anim.Play(stateName, frames, fps: AnimFpsFor(stateName), looping: looping);
-            // uniform fallback 保持旧行为：仅 unit 做 Fit；enemy 不新增布局副作用。
+            string playbackStateName = NormalizeActionStateAlias(stateName);
+            if (!TryGetCompatibleFlatFrames(
+                    anim.SpriteBaseKey,
+                    playbackStateName,
+                    out var frames,
+                    out _))
+            {
+                PlayFormalStatePlaceholder(
+                    handle,
+                    anim,
+                    anim.SpriteBaseKey,
+                    playbackStateName,
+                    speedMult);
+                return;
+            }
+            ApplyNativeDirectionRendering(handle, playbackStateName);
+            bool looping = IsLoopingState(playbackStateName);
+            anim.Play(playbackStateName, frames, fps: ScaledFps(playbackStateName, speedMult), looping: looping);
+            // uniform fallback 仍按 UnitView footprint 更新布局。
             if (_units.TryGetValue(warningHandle, out var uv) && uv != null) uv.FitSpriteToBlock();
         }
 
@@ -814,7 +1939,13 @@ namespace HeroDefense.Battle
                     cm.LoadIfNeeded();
                     var d = cm.GetTableInfo("GameConfig", "key", "anim_fps_default");
                     if (d != null) _animFpsDefault = cm.GetValue<float>(d, "value", 12f);
-                    foreach (var st in new[] { "idle", "walk", "walk_up", "walk_down", "attack", "attack_up", "attack_down", "die" })
+                    foreach (var st in new[]
+                    {
+                        "idle", "idle_left",
+                        "idle_down", "combat_idle", "combat_idle_left",
+                        "walk", "walk_left", "walk_up", "walk_down",
+                        "attack", "attack_left", "die", "die_left"
+                    })
                     {
                         var row = cm.GetTableInfo("GameConfig", "key", "anim_fps_" + st);
                         if (row != null) _animFps[st] = cm.GetValue<float>(row, "value", _animFpsDefault);
@@ -827,12 +1958,17 @@ namespace HeroDefense.Battle
         private static float AnimFpsFor(string state)
         {
             EnsureAnimFps();
-            if (state != null && _animFps.TryGetValue(state, out var f) && f >= 0.1f) return f;
-            // 方向后缀态无独立配置 → 继承基础态（anim_fps_walk_up 缺省时用 anim_fps_walk）。2026-06-11
-            if (state != null)
+            string semanticStateName = NormalizeActionStateAlias(state);
+            if (semanticStateName != null
+                && _animFps.TryGetValue(semanticStateName, out var f)
+                && f >= 0.1f)
+                return f;
+            string legacyStateName = LegacyPackageState(semanticStateName);
+            if (legacyStateName != null
+                && _animFps.TryGetValue(legacyStateName, out var legacyFps)
+                && legacyFps >= 0.1f)
             {
-                string baseState = StripDirSuffix(state);
-                if (baseState != state && _animFps.TryGetValue(baseState, out var bf) && bf >= 0.1f) return bf;
+                return legacyFps;
             }
             return _animFpsDefault;
         }
@@ -846,38 +1982,52 @@ namespace HeroDefense.Battle
             return f;
         }
 
-        /// <summary>状态名 → 帧数组，带两级回退（2026-06-11 四方向移动）：
-        ///   1) 方向后缀状态缺帧 → 回退基础状态（walk_up/walk_down→walk；attack_up/attack_down→attack）。
-        ///      美术分批补方向帧期间（当前仅孙尚香有 attack_up/down、全员无 walk_up/down），缺帧角色自动用侧面帧顶。
+        /// <summary>状态名 → 帧数组，带两级回退：
+        ///   1) 方向后缀状态缺帧 → 回退基础状态（walk_left/up/down→walk；attack_left→attack；idle_left→idle；die_left→die）。
+        ///      左向旧资源回退时保留 Lua 设置的 flipX；原生方向帧由播放路径取消镜像。
         ///   2) 仍 0 帧 → 回退 idle（T237：怪复用武将美术无 walk 状态时播 idle 循环而非僵首帧）。</summary>
         private static Sprite[] ResolveAnimFrames(string baseKey, string stateName)
         {
-            var frames = GetAnimFrames(baseKey, stateName);
-            if (frames.Length == 0)
-            {
-                string baseState = StripDirSuffix(stateName);
-                if (baseState != stateName) frames = GetAnimFrames(baseKey, baseState);
-            }
-            if (frames.Length == 0 && stateName != "idle")
-            {
-                frames = GetAnimFrames(baseKey, "idle");
-            }
-            return frames;
+            return TryGetCompatibleFlatFrames(baseKey, stateName, out var frames, out _)
+                ? frames
+                : new Sprite[0];
         }
 
-        /// <summary>"walk_up"→"walk"、"attack_down"→"attack"；无方向后缀原样返回。</summary>
-        private static string StripDirSuffix(string state)
-        {
-            if (string.IsNullOrEmpty(state)) return state;
-            if (state.EndsWith("_up")) return state.Substring(0, state.Length - 3);
-            if (state.EndsWith("_down")) return state.Substring(0, state.Length - 5);
-            return state;
-        }
-
-        /// <summary>持续循环态判定：idle + walk 全方向（walk/walk_up/walk_down）。attack*/die 一次性。</summary>
+        /// <summary>持续循环态判定：idle 与 walk 的全部方向态循环；attack/die 一次性。</summary>
         private static bool IsLoopingState(string state)
         {
-            return state == "idle" || (state != null && state.StartsWith("walk"));
+            string semanticStateName = NormalizeActionStateAlias(state);
+            return semanticStateName == "idle"
+                || state == "idle_left"
+                || semanticStateName == "idle_down"
+                || semanticStateName == "combat_idle"
+                || semanticStateName == "combat_idle_left"
+                || semanticStateName == "walk"
+                || semanticStateName == "walk_left"
+                || semanticStateName == "walk_up"
+                || semanticStateName == "walk_down";
+        }
+
+        private static bool IsDeathState(string state)
+        {
+            return state == "die"
+                || state == "die_left"
+                || state == "die_right";
+        }
+
+        private static bool IsAttackState(string state)
+        {
+            return state == "attack"
+                || state == "attack_left"
+                || state == "attack_right";
+        }
+
+        // 动画包/anim.json 可声明自定义状态循环；十态合同中的 idle/walk/attack/die 由运行时兜底纠正。
+        private static bool ResolveStateLooping(string state, bool declaredLooping)
+        {
+            if (IsLoopingState(state)) return true;
+            if (IsAttackState(state) || IsDeathState(state)) return false;
+            return declaredLooping;
         }
 
         private static Sprite[] GetAnimFrames(string baseKey, string state)
@@ -910,55 +2060,171 @@ namespace HeroDefense.Battle
         {
             if (_units.TryGetValue(handle, out var view) && view != null)
                 return view.GetComponent<SpriteAnimator>();
-            if (_enemies.TryGetValue(handle, out var em) && em != null)
-                return em.GetComponent<SpriteAnimator>();
             return null;
+        }
+
+        private static void SetHandleHpBarAnimHidden(long handle, bool hidden)
+        {
+            if (_units.TryGetValue(handle, out var view) && view != null)
+                view.SetHpBarAnimHidden(hidden);
+        }
+
+        private static void ClearHandleAnimationState(long handle)
+        {
+            _unitOverlaySlots.Remove(handle);
+            _visualFaceRight.Remove(handle);
+            var animator = GetAnimator(handle);
+            if (animator != null) animator.ClearRuntimeOverlays();
+            SetHandleHpBarAnimHidden(handle, false);
         }
 
         private static SpriteRenderer GetRenderer(long handle)
         {
             if (_units.TryGetValue(handle, out var view) && view != null)
                 return view.GetComponentInChildren<SpriteRenderer>();
-            if (_enemies.TryGetValue(handle, out var em) && em != null)
-                return em.GetComponentInChildren<SpriteRenderer>();
             return null;
         }
 
-        // 全局兜底占位 sprite — 配置 sprite_key 找不到时显示这个，保证 unit 至少可见
-        private static Sprite _fallbackSprite;
-        private static Sprite GetFallbackSprite()
+        // 原生方向态已经画好方向，不允许继承旧资源 flipX；只改渲染，不覆盖语义朝向缓存。
+        private static void ApplyNativeDirectionRendering(long handle, string stateName)
         {
-            if (_fallbackSprite != null) return _fallbackSprite;
-            // 优先用枪兵 idle_0 作为兜底（保证存在）
-            _fallbackSprite = HeroDefense.Engine.Host.LuaHost.LoadSprite("resources/art/unit/spearman_idle_0.png");
-            if (_fallbackSprite == null)
-                _fallbackSprite = HeroDefense.Engine.Host.LuaHost.LoadSprite("resources/art/unit/archer_idle_0.png");
-            return _fallbackSprite;
+            if (string.IsNullOrEmpty(stateName)
+                || !(stateName.EndsWith("_left")
+                    || stateName.EndsWith("_right")
+                    || stateName.EndsWith("_up")
+                    || stateName.EndsWith("_down")))
+                return;
+            var renderer = GetRenderer(handle);
+            if (renderer != null) renderer.flipX = false;
         }
 
-        // 怪物尺寸与武将同步：root 只负责世界位置，sprite_root 负责图片缩放/脚底锚定。
-        // 按首帧计算一次 UI 像素等效缩放，切动画帧复用，避免攻击帧画布变化导致身体缩放抖动。
-        private static void FitEnemyToCell(long handle, bool recomputeScale = false)
-        {
-            if (!_enemies.TryGetValue(handle, out var em) || em == null) return;
-            var sr = em.GetComponentInChildren<SpriteRenderer>();
-            if (sr == null || sr.sprite == null) return;
-            float s;
-            if (recomputeScale || !_enemyFitScale.TryGetValue(handle, out s) || s <= 0f)
-            {
-                var sz = sr.sprite.bounds.size;
-                if (sz.x <= 0.0001f || sz.y <= 0.0001f) return;
-                s = UnitView.CalcScreenPixelEquivalentScale(sr.sprite, sz);
-                _enemyFitScale[handle] = s;
-            }
-            sr.transform.localScale = new Vector3(s, s, 1f);
+        // 正式美术缺失时用 32px 逻辑画布占位，保证实体和碰撞区仍可验收。
+        // 主营保持 3 格横向比例；占位图只属于表现层，不进入业务数据。
+        private static readonly Dictionary<string, Sprite> _fallbackSprites =
+            new Dictionary<string, Sprite>();
 
-            var bb = sr.sprite.bounds;
-            var lp0 = sr.transform.localPosition;
-            float lx = -bb.center.x * s;
-            float ly = -GridMap.CellSizeY * 0.5f - (bb.center.y - bb.extents.y) * s;
-            sr.transform.localPosition = new Vector3(lx, ly, lp0.z);
-            em.RefreshHpBarLayout();
+        private static Sprite GetFallbackSprite(string spriteKey)
+        {
+            string kind = "unit";
+            if (!string.IsNullOrEmpty(spriteKey))
+            {
+                if (spriteKey.IndexOf(
+                        "building/camp",
+                        System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    kind = "camp";
+                else if (spriteKey.IndexOf(
+                        "building/barricade",
+                        System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    kind = "barricade";
+                else if (spriteKey.IndexOf(
+                        "building/tower",
+                        System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    kind = "tower";
+            }
+            if (_fallbackSprites.TryGetValue(kind, out var cached) && cached != null)
+                return cached;
+
+            int width = kind == "camp" ? 96 : 32;
+            const int height = 32;
+            var texture = new Texture2D(
+                width,
+                height,
+                TextureFormat.RGBA32,
+                false)
+            {
+                name = $"match_placeholder_{kind}",
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp,
+            };
+            var pixels = new Color32[width * height];
+            Color32 outline = new Color32(54, 43, 36, 255);
+            Color32 fill = kind == "unit"
+                ? new Color32(210, 154, 74, 255)
+                : kind == "tower"
+                    ? new Color32(126, 108, 84, 255)
+                    : kind == "barricade"
+                        ? new Color32(126, 72, 42, 255)
+                        : new Color32(154, 116, 70, 255);
+
+            int left = kind == "camp" ? 4 : 6;
+            int right = width - left - 1;
+            int bottom = 2;
+            int top = kind == "tower" ? 29 : 27;
+            for (int y = bottom; y <= top; y++)
+            {
+                for (int x = left; x <= right; x++)
+                {
+                    bool edge = x == left
+                        || x == right
+                        || y == bottom
+                        || y == top;
+                    pixels[y * width + x] = edge ? outline : fill;
+                }
+            }
+
+            if (kind == "unit")
+            {
+                for (int y = 23; y <= 30; y++)
+                {
+                    for (int x = 12; x <= 19; x++)
+                    {
+                        pixels[y * width + x] =
+                            x == 12 || x == 19 || y == 23 || y == 30
+                                ? outline
+                                : new Color32(224, 190, 132, 255);
+                    }
+                }
+            }
+            else if (kind == "barricade")
+            {
+                for (int x = 3; x < width - 3; x += 6)
+                {
+                    for (int y = 5; y < 31; y++)
+                        pixels[y * width + x] = outline;
+                }
+            }
+
+            texture.SetPixels32(pixels);
+            texture.Apply(false, true);
+            var sprite = Sprite.Create(
+                texture,
+                new Rect(0, 0, width, height),
+                new Vector2(0.5f, 0f),
+                32f);
+            sprite.name = $"match_placeholder_{kind}";
+            _fallbackSprites[kind] = sprite;
+            return sprite;
+        }
+
+        // 旧包没有 idle_down 时不能拿 idle 或左右战斗姿态冒充。以单帧占位保持对象
+        // 可见且不改变 Lua 的攻击/结算时序；其他缺失正式状态同样不做方向镜像。
+        private static bool PlayFormalStatePlaceholder(
+            long handle,
+            SpriteAnimator anim,
+            string baseKey,
+            string stateName,
+            float speedMult)
+        {
+            string playbackStateName = NormalizeActionStateAlias(stateName);
+            if (anim == null || !IsFormalActionState(playbackStateName)) return false;
+
+            string warningKey = NormalizeAnimBaseKey(baseKey) + "|" + playbackStateName;
+            if (_formalStatePlaceholderWarnings.Add(warningKey))
+            {
+                Debug.LogWarning(
+                    $"[BattleBridge] formal animation state missing; using single-frame placeholder (base={NormalizeAnimBaseKey(baseKey)}, state={playbackStateName})");
+            }
+
+            var placeholder = GetFallbackSprite(baseKey);
+            if (placeholder == null) return false;
+            ApplyNativeDirectionRendering(handle, playbackStateName);
+            anim.Play(
+                playbackStateName,
+                new[] { placeholder },
+                fps: ScaledFps(playbackStateName, speedMult),
+                looping: IsLoopingState(playbackStateName));
+            RefreshAnimLayout(handle);
+            return true;
         }
 
         public static void Battle_SetSprite(long handle, string spriteKey)
@@ -975,21 +2241,34 @@ namespace HeroDefense.Battle
             //    c) resources/art/{key}/atlas/walk_0   — 新结构 walk 备选
             //    d) resources/art/{key}_idle_0         — 旧扁平兼容
             //    e) resources/art/{key}_walk_0         — 旧扁平 walk 备选
-            var sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}/atlas/idle_0.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}/atlas/walk_0.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}_idle_0.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}_walk_0.png");
+            var sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite(
+                $"resources/art/{spriteKey}.png",
+                false);
+            if (sprite == null)
+                sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite(
+                    $"resources/art/{spriteKey}/atlas/idle_0.png",
+                    false);
+            if (sprite == null)
+                sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite(
+                    $"resources/art/{spriteKey}/atlas/walk_0.png",
+                    false);
+            if (sprite == null)
+                sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite(
+                    $"resources/art/{spriteKey}_idle_0.png",
+                    false);
+            if (sprite == null)
+                sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite(
+                    $"resources/art/{spriteKey}_walk_0.png",
+                    false);
             // 3. 所有 fallback 失败 → 用全局兜底，保证 unit 可见（配置错配占位文件时不至于无视觉）
-            if (sprite == null) sprite = GetFallbackSprite();
+            if (sprite == null) sprite = GetFallbackSprite(spriteKey);
             if (sprite == null) return;
 
             var sr = GetRenderer(handle);
             if (sr != null) sr.sprite = sprite;
 
-            // sprite 设好后按 footprint 脚底锚定；友军单位尺寸对齐拖拽 UI ghost，不再按格子压缩。
+            // sprite 设好后按 footprint 脚底锚定。
             if (_units.TryGetValue(handle, out var uv) && uv != null) uv.FitSpriteToBlock(true);
-            else FitEnemyToCell(handle, true);   // 怪物按武将同尺寸显示；换底图(idle)→重算身体基准缩放
         }
 
         public static void Battle_PlayAnim(long handle, string stateName)
@@ -997,36 +2276,113 @@ namespace HeroDefense.Battle
             Battle_PlayAnim(handle, stateName, 1f);
         }
 
+        public static bool Battle_SetUnitOverlay(long handle, int slot, string baseKey)
+        {
+            if (slot < 1 || slot > RuntimeOverlaySlotCount)
+            {
+                string warningKey = "slot|" + slot;
+                if (_runtimeOverlayApiWarnings.Add(warningKey))
+                {
+                    Debug.LogWarning(
+                        $"[BattleBridge] Battle_SetUnitOverlay slot 越界：{slot}（有效范围 1..{RuntimeOverlaySlotCount}）");
+                }
+                return false;
+            }
+
+            var animator = GetAnimator(handle);
+            if (animator == null)
+            {
+                string warningKey = "handle|" + handle;
+                if (_runtimeOverlayApiWarnings.Add(warningKey))
+                {
+                    Debug.LogWarning(
+                        $"[BattleBridge] Battle_SetUnitOverlay handle 无效：{handle}");
+                }
+                return false;
+            }
+
+            int slotIndex = slot - 1;
+            if (string.IsNullOrWhiteSpace(baseKey))
+            {
+                if (_unitOverlaySlots.TryGetValue(handle, out var existing) && existing != null)
+                {
+                    existing[slotIndex] = null;
+                    bool any = false;
+                    for (int i = 0; i < existing.Length; i++)
+                    {
+                        if (!string.IsNullOrEmpty(existing[i]))
+                        {
+                            any = true;
+                            break;
+                        }
+                    }
+                    if (!any) _unitOverlaySlots.Remove(handle);
+                }
+                animator.ClearRuntimeOverlaySlot(slotIndex);
+                return true;
+            }
+
+            if (!_unitOverlaySlots.TryGetValue(handle, out var slots) || slots == null)
+            {
+                slots = new string[RuntimeOverlaySlotCount];
+                _unitOverlaySlots[handle] = slots;
+            }
+            slots[slotIndex] = NormalizeAnimBaseKey(baseKey.Trim());
+            return true;
+        }
+
+        public static void Battle_ClearUnitOverlays(long handle)
+        {
+            _unitOverlaySlots.Remove(handle);
+            var animator = GetAnimator(handle);
+            if (animator != null) animator.ClearRuntimeOverlays();
+        }
+
         // speedMult: 攻速加成倍率（基准 1.0）。攻击动画 fps = round(基础fps × mult)，攻速 buff 越高出手越快。2026-06-07
         public static void Battle_PlayAnim(long handle, string stateName, float speedMult)
         {
             var anim = GetAnimator(handle);
             if (anim == null) return;
+            string playbackStateName = NormalizeActionStateAlias(stateName);
             if (string.IsNullOrEmpty(anim.SpriteBaseKey))
             {
-                anim.SendMessage("OnAnimStateChanged", stateName, SendMessageOptions.DontRequireReceiver);
+                anim.SendMessage("OnAnimStateChanged", playbackStateName, SendMessageOptions.DontRequireReceiver);
                 return;
             }
 
             // 2026-05-29 (Q1) — 按 AnimType 分发：spine 走 stub（log + fallback 到 frame）；frame 走原路径
             if (anim.AnimType == "atSpine")
             {
-                PlayAnim_Spine(handle, anim, stateName, speedMult);
+                PlayAnim_Spine(handle, anim, playbackStateName, speedMult);
                 return;
             }
 
-            if (TryPlayTimedAnim(handle, anim, stateName, speedMult))
+            if (TryPlayBundleAnim(handle, anim, playbackStateName, speedMult)) return;
+
+            if (TryPlayTimedAnim(handle, anim, playbackStateName, speedMult))
             {
                 RefreshAnimLayout(handle);
                 return;
             }
 
-            // 帧数按文件实际存在自动探测（缓存）+ 方向后缀/idle 双级回退
-            var frames = ResolveAnimFrames(anim.SpriteBaseKey, stateName);
-            if (frames.Length == 0) return;
+            if (!TryGetCompatibleFlatFrames(
+                    anim.SpriteBaseKey,
+                    playbackStateName,
+                    out var frames,
+                    out _))
+            {
+                PlayFormalStatePlaceholder(
+                    handle,
+                    anim,
+                    anim.SpriteBaseKey,
+                    playbackStateName,
+                    speedMult);
+                return;
+            }
+            ApplyNativeDirectionRendering(handle, playbackStateName);
 
-            bool looping = IsLoopingState(stateName);
-            anim.Play(stateName, frames, fps: ScaledFps(stateName, speedMult), looping: looping);  // fps 随攻速倍率缩放(整数取整)
+            bool looping = IsLoopingState(playbackStateName);
+            anim.Play(playbackStateName, frames, fps: ScaledFps(playbackStateName, speedMult), looping: looping);
 
             // Play 已把首帧设到 SpriteRenderer，按 footprint 脚底锚定；友军单位尺寸对齐拖拽 UI ghost。
             RefreshAnimLayout(handle);   // 切态复用 idle 身体基准缩放(不重算→身体不缩·兵器溢出)
@@ -1040,7 +2396,9 @@ namespace HeroDefense.Battle
         {
             var anim = GetAnimator(handle);
             if (anim == null || string.IsNullOrEmpty(anim.SpriteBaseKey)) return 0f;
-            if (TryBuildTimedClip(anim.SpriteBaseKey, state, speedMult, out var timed))
+            if (TryGetBundleAnimLength(anim.SpriteBaseKey, state, speedMult, out float bundleDuration))
+                return bundleDuration;
+            if (TryBuildTimedClip(anim.SpriteBaseKey, state, speedMult, out var timed, out _))
                 return timed.RawDurationTotal / timed.SpeedMultiplier;
             var frames = ResolveAnimFrames(anim.SpriteBaseKey, state);
             int n = frames != null ? frames.Length : 0;
@@ -1058,10 +2416,6 @@ namespace HeroDefense.Battle
                 if (gm != null && gm.Active) gm.Stop();
                 view.SetWorldPosition(wx, wy);
             }
-            else if (_enemies.TryGetValue(handle, out var em) && em != null)
-            {
-                em.transform.position = new Vector3(wx, wy, 0f);
-            }
         }
 
         /// <summary>2026-06-14 用户：移动中的单位被再拖/双击回收 → 停在"当前视觉格"(不回 walk 目标)。
@@ -1077,8 +2431,7 @@ namespace HeroDefense.Battle
             return GridMap.RowColToCellId(cell.row, cell.col);
         }
 
-        /// <summary>2026-06-14 用户：拖拽【移动中】单位时按它"当前视觉格"动态算路径(只读,不停 GridMover——
-        /// 按下不改变卡片状态,卡片继续走)。读 transform.position → WorldToCell → cellId。-1=单位不存在。</summary>
+        /// <summary>读取移动中单位的当前视觉格，不停止 GridMover。-1 表示单位不存在。</summary>
         public static int Battle_GetUnitCell(long handle)
         {
             if (!_units.TryGetValue(handle, out var view) || view == null) return -1;
@@ -1087,14 +2440,10 @@ namespace HeroDefense.Battle
             return GridMap.RowColToCellId(cell.row, cell.col);
         }
 
-        /// <summary>R2 玩家移动（2026-06-11，块2.2）：场上单位沿 cell 路径逐格走（非瞬移）。
+        /// <summary>场上单位沿 cell 路径逐格走（非瞬移）。
         /// pathCsv = "r,c;r,c;..."（Lua Path_Find 产出，不含当前格也可——从当前位置朝首点走）。
         /// 速度读 GameConfig.unit_move_speed（GridMover 内缓存）；到达终点 GridMover 回调 Lua Unit_OnWalkArrived(handle)。
-        /// 失败保证（审查 A）：单位不存在/路径全无效时**同步回调 Unit_OnWalkArrived**（Lua 已先置 u.moving=true、
-        /// 占格已转移，回调缺席会让单位永久不可拖；Lua 侧另有 watchdog 双保险）。越界 cell 过滤（审查 M）。</summary>
-        // v2 批 1b（2026-06-14）C#⑦ 方案A：加 speed 参（逐单位移速，npc.tab.move_speed → Lua 透传；格/秒）。
-        // speed<=0 时 GridMover.BeginPath 内回退 ConfigSpeed()（旧 unit_move_speed 兜底，批4 删）。
-        // xLua 注册为 Action<long,string,float>；只传 2 参的旧 Lua 调用（unit_logic.lua）→ xLua 补 speed=0 → 走兜底，零回归。
+        /// 单位不存在或路径无有效格时同步回调 Unit_OnWalkArrived；越界 cell 会被过滤。</summary>
         public static void Battle_UnitWalkPath(long handle, string pathCsv, float speed = 0f)
         {
             if (!_units.TryGetValue(handle, out var view) || view == null)
@@ -1153,236 +2502,56 @@ namespace HeroDefense.Battle
             if (_units.TryGetValue(handle, out var view) && view != null) view.SetScale(scale);
         }
 
-        /// <summary>设单位/怪朝向。faceRight=true 朝右(原图方向)，false flipX 朝左。攻击时朝目标。</summary>
+        /// <summary>设单位朝向。faceRight=true 朝右，false 朝左；攻击时由业务传入目标方向。</summary>
         public static void Battle_SetUnitFacing(long handle, bool faceRight)
         {
             if (_units.TryGetValue(handle, out var view) && view != null)
             {
+                _visualFaceRight[handle] = faceRight;
                 view.SetFacing(faceRight);
             }
-            else if (_enemies.TryGetValue(handle, out var em) && em != null)
-            {
-                var sr = em.GetComponentInChildren<SpriteRenderer>();
-                if (sr != null) sr.flipX = !faceRight;
-            }
         }
-
-        // ============ T237 怪物 HSV 暗化（怪 = 武将/兵种黑暗变体） ============
-        // 怪物运行时复用武将/兵种美术（Battle_SetSprite 已支持任意 sprite_key），
-        // 再给其 SpriteRenderer 套 HeroDefense/SpriteHsvShift material 做 HSV 偏移即暗化。
-        // 业务侧（enemy_manager.lua）查 npc.txt / 解析 dark_color_shift；此处只做底层渲染。
-        private static Shader _hsvShader;
-        private static readonly int HueShiftID   = Shader.PropertyToID("_HueShift");
-        private static readonly int SaturationID = Shader.PropertyToID("_Saturation");
-        private static readonly int BrightnessID = Shader.PropertyToID("_Brightness");
-
-        private static Shader GetHsvShader()
-        {
-            if (_hsvShader == null) _hsvShader = Shader.Find("HeroDefense/SpriteHsvShift");
-            return _hsvShader;
-        }
-
-        // R5/F3 (2026-06-11) 炸弹③：去逐怪 new Material → 全部怪共享 1 个 HSV material，
-        // 逐怪参数走 MaterialPropertyBlock（怪=卡片化后逐怪材质实例 = DrawCall 头号风险）。
-        private static Material _hsvSharedMaterial;
-        private static MaterialPropertyBlock _hsvMpb;
 
         /// <summary>
-        /// 给怪物 SpriteRenderer 应用 HSV 偏移（暗化）。
-        ///   hueShift   — 色相偏移度（dark_color_shift shift_hue）
-        ///   saturation — 饱和度乘子（dark_color_shift saturation，<1 去色）
-        ///   brightness — 亮度乘子（dark_color_shift brightness，<1 暗化）
-        /// R5/F3：所有怪共享 1 个 SpriteHsvShift material，逐怪参数经 MaterialPropertyBlock
-        /// 下发（不再 new Material）。HSV shader 同时含 _FlashColor/_FlashAmount，受击闪白
-        /// （HitFeedback，同样走 MPB）仍生效。仅对怪物（_enemies）生效；单位（_units）调用无效果。
+        /// 设置武将生命与兵力两条表现比例。比例在 C# 内钳制到 0..1；
+        /// maxHP、兵力上限和任何伤害规则都留在 Lua Match 领域层。
         /// </summary>
-        public static void Battle_SetEnemyHsv(long handle, float hueShift, float saturation, float brightness)
+        public static void Battle_SetUnitStatusBars(
+            long handle,
+            float heroPct,
+            float troopPct)
         {
-            if (!_enemies.TryGetValue(handle, out var em) || em == null) return;
-            var sr = em.GetComponentInChildren<SpriteRenderer>();
-            if (sr == null) return;
-
-            var shader = GetHsvShader();
-            if (shader == null)
+            if (_units.TryGetValue(handle, out var view)
+                    && view != null)
             {
-                Debug.LogWarning("[BattleBridge] HeroDefense/SpriteHsvShift shader 未找到，跳过 HSV 暗化");
+                view.SetStatusBars(heroPct, troopPct);
                 return;
             }
-            if (_hsvSharedMaterial == null) _hsvSharedMaterial = new Material(shader);
-            if (sr.sharedMaterial != _hsvSharedMaterial) sr.sharedMaterial = _hsvSharedMaterial;
-
-            if (_hsvMpb == null) _hsvMpb = new MaterialPropertyBlock();
-            // 先 Get 再改再 Set：保留 Unity 给 SpriteRenderer 内部写入的 _MainTex 等 block 值
-            sr.GetPropertyBlock(_hsvMpb);
-            _hsvMpb.SetFloat(HueShiftID, hueShift);
-            _hsvMpb.SetFloat(SaturationID, saturation);
-            _hsvMpb.SetFloat(BrightnessID, brightness);
-            sr.SetPropertyBlock(_hsvMpb);
-        }
-
-        // ============ 敌人 3 方法 ============
-
-        /// <summary>查 lane.txt 取 (level_id, lane_id) 的 waypoints_json，拼成 world Vector2 列表（[col,row] → CellToWorld）。
-        /// T212：spawnRowOverride > 0 时把非营帐 waypoint 的 row 整体平移到 spawn_row，让 lane 沿入场行水平推进。</summary>
-        private static List<Vector2> ResolveWaypointsForLane(int levelId, int laneId, int spawnRowOverride = 0)
-        {
-            var result = new List<Vector2>();
-            try
+            if (_missingStatusViewWarnings.Add(handle))
             {
-                var cm = ConfigManager.Instance;
-                if (cm == null) return result;
-                cm.LoadIfNeeded();
-                var rows = cm.GetTableInfoList("lane", "level_id", levelId);
-                if (rows == null) return result;
-                Dictionary<string, object> matchedRow = null;
-                foreach (var r in rows)
-                {
-                    if (r.TryGetValue("lane_id", out var v) && int.TryParse(v.ToString(), out int lid) && lid == laneId)
-                    {
-                        matchedRow = r;
-                        break;
-                    }
-                }
-                if (matchedRow == null)
-                {
-                    Debug.LogWarning($"[BattleBridge] lane.txt 找不到 level={levelId} lane={laneId}，用默认中路兜底");
-                    return FallbackLane(spawnRowOverride);
-                }
-
-                if (!matchedRow.TryGetValue("waypoints_json", out var rawJson)) return result;
-                string json = rawJson?.ToString() ?? "";
-                if (string.IsNullOrEmpty(json)) return result;
-
-                // 简单解析 [[col,row],[col,row],...] — 提取数字对
-                var matches = System.Text.RegularExpressions.Regex.Matches(json, @"\[\s*(\d+)\s*,\s*(\d+)\s*\]");
-                int wpTotal = matches.Count;
-                int wpIdx = 0;
-                foreach (System.Text.RegularExpressions.Match m in matches)
-                {
-                    int col = int.Parse(m.Groups[1].Value);
-                    int row = int.Parse(m.Groups[2].Value);
-                    // v7：lane 末点 = 左基地（网格外左侧城墙，怪到此=失败）；前面的点 T212 平移到 spawn_row 水平推进。
-                    bool isLast = (wpIdx == wpTotal - 1);
-                    if (!isLast && spawnRowOverride > 0) row = spawnRowOverride;
-                    Vector2 wp;
-                    if (isLast)
-                    {
-                        int er = spawnRowOverride > 0 ? spawnRowOverride : row;
-                        float wallX = GetCampWorldPos().x;          // 左基地世界 X（网格外左侧）
-                        float rowY = GridMap.CellToWorld(er, 1).y;  // 用最左可玩列(col1)的行 Y → 怪停在自己行的城墙
-                        wp = new Vector2(wallX, rowY);
-                    }
-                    else
-                    {
-                        wp = GridMap.CellToWorld(row, col);
-                    }
-                    result.Add(wp);
-                    wpIdx++;
-                }
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogWarning($"[BattleBridge] ResolveWaypointsForLane 异常: {e.Message}");
-            }
-            // 兜底：任何原因导致 waypoints 为空（lane 缺失 / json 缺失 / 解析失败）→ 默认中路，
-            // 否则 EnemyMover._waypoints 为空 → 怪原地不动 → 不到营帐不死 → 波次永远卡死。
-            if (result.Count == 0)
-            {
-                Debug.LogWarning($"[BattleBridge] lane level={levelId} lane={laneId} waypoints 为空，用默认中路兜底");
-                return FallbackLane(spawnRowOverride);
-            }
-            return result;
-        }
-
-        /// <summary>lane 缺失/解析失败兜底：默认中路 col 13→8→3→营帐，避免怪原地不动卡死波次。</summary>
-        private static List<Vector2> FallbackLane(int spawnRowOverride)
-        {
-            int fr = spawnRowOverride > 0 ? spawnRowOverride : 4;
-            return new List<Vector2>
-            {
-                GridMap.CellToWorld(fr, GridMap.Cols + 1),
-                GridMap.CellToWorld(fr, 8),
-                GridMap.CellToWorld(fr, 3),
-                GetCampWorldPos(),
-            };
-        }
-
-        /// <summary>营帐 sprite 的真实世界坐标（lane 末点用）。CampVisual 无则回落到公式估算。</summary>
-        // v7：左基地在网格最左列(col1)左侧一格。从 CellView 边缘算（不依赖 CampVisual 摆位时机/camp_rect）。
-        private static Vector2 GetCampWorldPos()
-        {
-            Battlefield2DLayoutBridge.CampWallLayout layout;
-            if (Battlefield3DLayoutBridge.TryGetCampWallLayout("left", out layout))
-                return new Vector2(layout.x, layout.y);
-            if (Battlefield2DLayoutBridge.TryGetCampWallLayout("left", out layout))
-                return new Vector2(layout.x, layout.y);
-
-            float colStep = Mathf.Abs(GridMap.CellToWorld(1, 2).x - GridMap.CellToWorld(1, 1).x);
-            if (colStep < 0.01f) colStep = 1.28f;
-            var edge = GridMap.CellToWorld(4, 1);
-            return new Vector2(edge.x - colStep, edge.y);
-        }
-
-        // 原签名:无 spawn_row,EnemyMover 走 lane.txt 默认 row(怪汇集到 lane 中线)
-        public static long Battle_SpawnEnemy(string monsterId, int laneId, float spawnX, float spawnY)
-        {
-            return Battle_SpawnEnemyAtRow(monsterId, laneId, spawnX, spawnY, 0);
-        }
-
-        // T212 (2026-05-21):spawnRow > 0 时 ResolveWaypointsForLane 把非营帐 waypoint 整体平移到该行,
-        // 让怪沿入场行水平推进直到营帐 — 8 行随机入场后视觉上各行独立,不再几秒后汇为一条直线。
-        public static long Battle_SpawnEnemyAtRow(string monsterId, int laneId, float spawnX, float spawnY, int spawnRow)
-        {
-            try
-            {
-                var go = new GameObject($"Enemy_{monsterId}_lane{laneId}");
-                go.transform.position = new Vector3(spawnX, spawnY, 0f);
-
-                var spriteRoot = new GameObject("sprite_root");
-                spriteRoot.transform.SetParent(go.transform, false);
-                var sr = spriteRoot.AddComponent<SpriteRenderer>();
-                sr.sortingLayerName = HDSortingLayers.Enemy;
-                sr.sortingOrder = GridSortingService.CalcSortingOrder(spawnY);
-
-                var em = go.AddComponent<EnemyMover>();
-                go.AddComponent<SpriteAnimator>();
-
-                // 2026-06-03 — 怪物头顶血条：与单位同款 hp_bar(bg+fill)，敌军红。
-                //   初始 Y 占位 0.4，EnemyMover 在 sprite 就绪后按 sprite 实际高度重定位到头顶。
-                //   sr=root SpriteRenderer（Enemy 层）→ 血条叠在 Enemy 层本体之上。
-                var hpBar = BuildHpBar(go, sr, 0.4f, new Color(0.9f, 0.25f, 0.2f, 1f));
-                em.BindHpBar(hpBar);
-
-                long h = NextHandle();
-                // 自动从 lane.txt 拼 waypoints（业务 Lua 不操心）, spawnRow>0 时整条 lane 平移到 spawn 行
-                var waypoints = ResolveWaypointsForLane(BattleSceneController.PendingLevelId, laneId, spawnRow);
-                em.Init(h, 1f /* speed: Lua 之后通过 SetEnemySpeed 注入 */, waypoints, new Vector2(spawnX, spawnY));
-                go.name = $"Enemy_{monsterId}_h{h}";
-                _enemies[h] = em;
-
-                // 同步注册到 HitFeedback 句柄表（怪也能受打击四件套）
-                try { HitFeedback.RegisterHandle(h, go); } catch { /* silent */ }
-
-                return h;
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"[BattleBridge] Battle_SpawnEnemy 失败: {e.Message}");
-                return 0;
+                Debug.LogWarning(
+                    $"[BattleBridge] 状态条目标 view 不存在：{handle}");
             }
         }
 
-        // pct = hp/max_hp (0..1)。怪走 EnemyMover 自持的 hp_bar（2026-06-03）；
-        //   友军单位（Unit_TakeDamage/Unit_Heal 也调本函数）走 UnitView。
-        public static void Battle_SetEnemyHpBar(long handle, float pct)
+        /// <summary>
+        /// dual=武将生命+兵力，single=建筑耐久。这里只切显示模式，
+        /// 不判断实体业务类型。
+        /// </summary>
+        public static void Battle_SetUnitStatusBarMode(
+            long handle,
+            string mode)
         {
-            if (_enemies.TryGetValue(handle, out var em) && em != null)
+            if (_units.TryGetValue(handle, out var view)
+                    && view != null)
             {
-                em.SetHp(pct);
+                view.SetStatusBarMode(mode);
+                return;
             }
-            else if (_units.TryGetValue(handle, out var u) && u != null)
+            if (_missingStatusViewWarnings.Add(handle))
             {
-                u.SetHp(pct, 1f);
+                Debug.LogWarning(
+                    $"[BattleBridge] 状态条模式目标 view 不存在：{handle}");
             }
         }
 
@@ -1393,50 +2562,6 @@ namespace HeroDefense.Battle
             {
                 u.SetHpBarVisible(visible);
             }
-        }
-
-        public static void Battle_SetEnemySpeed(long handle, float speed)
-        {
-            if (_enemies.TryGetValue(handle, out var em) && em != null)
-            {
-                em.Speed = speed;
-            }
-        }
-
-        /// <summary>怪进入/退出攻击状态时 Lua 调用 → 暂停/恢复位移（怪攻击时停下来）。</summary>
-        public static void Battle_SetEnemyHalted(long handle, bool halted)
-        {
-            if (_enemies.TryGetValue(handle, out var em) && em != null)
-            {
-                em.Halted = halted;
-            }
-        }
-
-        // 怪物当前 cell（按 GameObject world 坐标实时反查）。
-        // attack_logic 索敌靠 enemy.row/col —— 怪物移动后 Lua 侧 enemy_manager.Enemy_UpdateCell 调本接口刷新。
-        // 未找到 / 已销毁 → 返回 -1。
-        public static int Battle_GetEnemyRow(long handle)
-        {
-            if (_enemies.TryGetValue(handle, out var em) && em != null)
-                return GridMap.WorldToCellRow(em.transform.position.y);
-            return -1;
-        }
-
-        public static int Battle_GetEnemyCol(long handle)
-        {
-            if (_enemies.TryGetValue(handle, out var em) && em != null)
-                return GridMap.WorldToCellCol(em.transform.position.x);
-            return -1;
-        }
-
-        /// <summary>怪物网格步进中接战：停在当前视觉位置并返回当前 cellId，Lua 负责同步 e.row/e.col 与占格表。</summary>
-        public static int Battle_GetEnemyCellAndStop(long handle)
-        {
-            if (!_enemies.TryGetValue(handle, out var em) || em == null) return -1;
-            em.StopStep();
-            var p = em.transform.position;
-            var cell = GridMap.WorldToCell(new Vector2(p.x, p.y));
-            return GridMap.RowColToCellId(cell.row, cell.col);
         }
 
         // ============ 三区桥接（R1b 2026-06-10）============
@@ -1457,7 +2582,46 @@ namespace HeroDefense.Battle
         private static Sprite GetProjectileSprite()
         {
             if (_projectileSprite == null)
-                _projectileSprite = HeroDefense.Engine.Host.LuaHost.LoadSprite("resources/art/projectile/arrow.png");
+            {
+                _projectileSprite =
+                    HeroDefense.Engine.Host.LuaHost.LoadSprite(
+                        "resources/art/projectile/arrow.png",
+                        false);
+                if (_projectileSprite == null)
+                {
+                    var texture = new Texture2D(
+                        8,
+                        2,
+                        TextureFormat.RGBA32,
+                        false)
+                    {
+                        name = "match_placeholder_projectile",
+                        filterMode = FilterMode.Point,
+                        wrapMode = TextureWrapMode.Clamp,
+                    };
+                    var pixels = new Color32[16];
+                    for (int index = 0;
+                            index < pixels.Length;
+                            index++)
+                    {
+                        pixels[index] =
+                            new Color32(
+                                244,
+                                205,
+                                96,
+                                255);
+                    }
+                    texture.SetPixels32(pixels);
+                    texture.Apply(false, true);
+                    _projectileSprite = Sprite.Create(
+                        texture,
+                        new Rect(0, 0, 8, 2),
+                        new Vector2(0.5f, 0.5f),
+                        32f);
+                    _projectileSprite.name =
+                        "match_placeholder_projectile";
+                }
+            }
             return _projectileSprite;
         }
 
@@ -1477,6 +2641,12 @@ namespace HeroDefense.Battle
             return sp;
         }
 
+        /// <summary>供纯视觉兵模投射物复用资源加载与安全默认图，不注册 ProjectileTicker。</summary>
+        internal static Sprite GetVisualProjectileSprite(string key)
+        {
+            return GetProjectileSprite(key);
+        }
+
         /// <summary>
         /// 投射物（C# 跑数学：直线位移 + 命中 → 调 Lua Battle_OnProjectileHit）。
         /// damage 实际不在 C# 用（Lua 计算克制/暴击），保留参数是为了未来扩展 callback。
@@ -1489,7 +2659,6 @@ namespace HeroDefense.Battle
 
                 Transform target = null;
                 if (_units.TryGetValue(tgtHandle, out var tu) && tu != null) target = tu.transform;
-                else if (_enemies.TryGetValue(tgtHandle, out var te) && te != null) target = te.transform;
                 if (target == null)
                 {
                     Debug.LogWarning($"[BattleBridge] Battle_SpawnProjectile 目标 {tgtHandle} 不存在");
@@ -1498,7 +2667,6 @@ namespace HeroDefense.Battle
 
                 Vector2 spawn;
                 if (_units.TryGetValue(srcHandle, out var su) && su != null) spawn = su.transform.position;
-                else if (_enemies.TryGetValue(srcHandle, out var se) && se != null) spawn = se.transform.position;
                 else spawn = Vector2.zero;
 
                 // Step 11 池化：优先池复用
@@ -1559,10 +2727,10 @@ namespace HeroDefense.Battle
         // 按 Docs/skill-system-architecture.md §5 + §10
         // 旧 Battle_SpawnProjectile 保留不动；新 3 个方法各自创建对应模式投掷物
 
-        /// <summary>P1.6: 枚举所有存活敌人（ProjectileTicker.Line 模式扫线用）。</summary>
-        public static IEnumerable<KeyValuePair<long, EnemyMover>> EnumerateEnemies()
+        /// <summary>供 ProjectileTicker 的直线模式枚举当前存活单位。</summary>
+        internal static IEnumerable<KeyValuePair<long, UnitView>> EnumerateUnits()
         {
-            return _enemies;
+            return _units;
         }
 
         // 共享 spawn helper：复用旧 Battle_SpawnProjectile 的池化 + sprite 逻辑
@@ -1579,7 +2747,6 @@ namespace HeroDefense.Battle
             Vector2 unitPos;
             int srcNpcId = 0;
             if (_units.TryGetValue(srcHandle, out var su) && su != null) { unitPos = su.transform.position; srcNpcId = ResolveNpcIdFromUnitName(su.gameObject); }
-            else if (_enemies.TryGetValue(srcHandle, out var se) && se != null) unitPos = se.transform.position;
             else unitPos = Vector2.zero;
 
             var (mdx, mdy) = ResolveMuzzleOffset(srcNpcId);
@@ -1704,19 +2871,20 @@ namespace HeroDefense.Battle
             return int.TryParse(name.Substring(5, us - 5), out int id) ? id : 0;
         }
 
-        // 源单位/怪当前朝向（faceRight）：从其 SpriteRenderer.flipX 推（Battle_SetUnitFacing 维护 flipX=!faceRight）。
+        // 源单位当前朝向（faceRight）：从其 SpriteRenderer.flipX 推（Battle_SetUnitFacing 维护 flipX=!faceRight）。
         // 找不到 → 默认朝右（true）。Tracking 模式用（追单位无固定方向，按 spawn 时朝向出膛）。
         private static bool ResolveSrcFaceRight(long srcHandle)
         {
+            if (_visualFaceRight.TryGetValue(srcHandle, out bool faceRight))
+                return faceRight;
             var sr = GetRenderer(srcHandle);
             return sr == null || !sr.flipX;
         }
 
-        // 源单位/怪世界 X（落点朝向判定用）；找不到返回 0。
+        // 源单位世界 X（落点朝向判定用）；找不到返回 0。
         private static float GetSrcWorldX(long srcHandle)
         {
             if (_units.TryGetValue(srcHandle, out var su) && su != null) return su.transform.position.x;
-            if (_enemies.TryGetValue(srcHandle, out var se) && se != null) return se.transform.position.x;
             return 0f;
         }
 
@@ -1727,7 +2895,6 @@ namespace HeroDefense.Battle
             {
                 Transform target = null;
                 if (_units.TryGetValue(tgtHandle, out var tu) && tu != null) target = tu.transform;
-                else if (_enemies.TryGetValue(tgtHandle, out var te) && te != null) target = te.transform;
                 if (target == null) { Debug.LogWarning($"[BattleBridge] Tracking 目标 {tgtHandle} 不存在"); return 0; }
 
                 var s = SpawnProjectileShell(srcHandle, projectileKey, ResolveSrcFaceRight(srcHandle));
@@ -1759,7 +2926,17 @@ namespace HeroDefense.Battle
             try
             {
                 var s = SpawnProjectileShell(srcHandle, projectileKey, dirX >= 0f);
-                s.ticker.InitLine(s.handle, s.spawnPos, new Vector2(dirX, dirY), distance, width, speed > 0 ? speed : 8f);
+                int sourceTeam = _units.TryGetValue(srcHandle, out var source) && source != null
+                    ? source.Team
+                    : UnitTeamOwn;
+                s.ticker.InitLine(
+                    s.handle,
+                    s.spawnPos,
+                    new Vector2(dirX, dirY),
+                    distance,
+                    width,
+                    speed > 0 ? speed : 8f,
+                    sourceTeam);
                 return s.handle;
             }
             catch (System.Exception e) { Debug.LogError($"[BattleBridge] SpawnProjectileLine 失败: {e.Message}"); return 0; }
@@ -1772,70 +2949,21 @@ namespace HeroDefense.Battle
             try
             {
                 var s = SpawnProjectileShell(srcHandle, projectileKey, dirX >= 0f);
-                s.ticker.InitLine(s.handle, s.spawnPos, new Vector2(dirX, dirY), distance, width, speed > 0 ? speed : 8f, true);
+                int sourceTeam = _units.TryGetValue(srcHandle, out var source) && source != null
+                    ? source.Team
+                    : UnitTeamOwn;
+                s.ticker.InitLine(
+                    s.handle,
+                    s.spawnPos,
+                    new Vector2(dirX, dirY),
+                    distance,
+                    width,
+                    speed > 0 ? speed : 8f,
+                    sourceTeam,
+                    true);
                 return s.handle;
             }
             catch (System.Exception e) { Debug.LogError($"[BattleBridge] SpawnProjectileLineStop 失败: {e.Message}"); return 0; }
-        }
-
-        /// <summary>R6: 怪切网格步进模式（清 lane waypoints，spawn 后立即调；greedy 选格在 Lua）。</summary>
-        public static void Battle_EnemyGridMode(long handle)
-        {
-            if (!_enemies.TryGetValue(handle, out var em) || em == null) return;
-            em.EnterGridMode();
-        }
-
-        /// <summary>R6: 怪步进一格到 (row,col)（Lua greedy 决策后调；到格回调 Enemy_OnStepDone）。</summary>
-        public static bool Battle_EnemyStepToCell(long handle, int row, int col)
-        {
-            if (!_enemies.TryGetValue(handle, out var em) || em == null) return false;
-            float wx = Battle_CellToWorldX(row, col);
-            float wy = Battle_CellToWorldY(row, col);
-            em.StepTo(new Vector2(wx, wy));
-            return true;
-        }
-
-        /// <summary>P2b: 怪连续移动到任意世界坐标点（围攻环位 / 沿行推进用；亚格精度）。
-        /// StepTo 内部首次调用自动 EnterGridMode（清 lane 路点，转手动 StepTo 控制）。</summary>
-        public static bool Battle_EnemyStepToXY(long handle, float wx, float wy)
-        {
-            if (!_enemies.TryGetValue(handle, out var em) || em == null) return false;
-            em.StepTo(new Vector2(wx, wy));
-            return true;
-        }
-
-        /// <summary>P1.6: 瞬移敌人到指定 cell（etKnockback handler 用，跳过寻路）。</summary>
-        public static void Battle_SetEnemyCell(long handle, int row, int col)
-        {
-            try
-            {
-                if (!_enemies.TryGetValue(handle, out var em) || em == null) return;
-                float wx = Battle_CellToWorldX(row, col);
-                float wy = Battle_CellToWorldY(row, col);
-                em.transform.position = new Vector3(wx, wy, em.transform.position.z);
-            }
-            catch (System.Exception e) { Debug.LogError($"[BattleBridge] SetEnemyCell 失败: {e.Message}"); }
-        }
-
-        // v2 批 1b（2026-06-14）C#⑥：击退怪 cells 格（etKnockback effect）。
-        // 怪沿 lane 朝左基地推进（col 递减）→ 击退 = 反向（远离基地）= +col。
-        // 批1 只做 bounds-clamp 的可见瞬移（撞己方单位的精确撞停留批3）；复用 Battle_SetEnemyCell 同一 transform 落位路径。
-        // cells 四舍五入取整格；<=0 或越界 clamp 后无位移则静默。
-        public static void Battle_KnockbackEnemy(long handle, float cells)
-        {
-            try
-            {
-                if (!_enemies.TryGetValue(handle, out var em) || em == null) return;
-                int n = Mathf.RoundToInt(cells);
-                if (n == 0) return;
-                int row = Battle_GetEnemyRow(handle);
-                int col = Battle_GetEnemyCol(handle);
-                if (row < 1 || col < 1) return;   // 反查失败
-                int newCol = Mathf.Clamp(col + n, 1, GridMap.Cols);   // 远离基地 = +col；clamp 不出界
-                if (newCol == col) return;        // 已贴边 → 无可见位移
-                Battle_SetEnemyCell(handle, row, newCol);
-            }
-            catch (System.Exception e) { Debug.LogError($"[BattleBridge] KnockbackEnemy 失败: {e.Message}"); }
         }
 
         // ============ 网格 1 方法 ============
@@ -1924,20 +3052,6 @@ namespace HeroDefense.Battle
         }
 
         public static bool Battle_IsCellInBounds(int row, int col) => GridMap.IsCellInBounds(row, col);
-        public static bool Battle_IsCellInCamp(int row, int col) => GridMap.IsCellInCamp(row, col);
-
-        // T202 (2026-05-21) — 玩法模式切换 grid 视觉样式（"transparent" / "unlocked_shown"）
-        // 由 GridState_Init 末尾调用，把 mode.cell_visual_style 广播给所有 cell
-        public static void Battle_SetGridVisualStyle(string style)
-        {
-            if (GridMap.Cells == null) return;
-            for (int r = 1; r <= GridMap.Rows; r++)
-                for (int c = 1; c <= GridMap.Cols; c++)
-                {
-                    var cv = GridMap.Cells[r, c];
-                    if (cv != null) cv.SetVisualStyle(style);
-                }
-        }
 
         /// <summary>
         /// 开发/编辑器联调用：重新从 2D 场景布局 XML 构建战场格子。
@@ -1963,207 +3077,9 @@ namespace HeroDefense.Battle
 
         public static int Battle_CalcSortingOrder(float worldY) => GridSortingService.CalcSortingOrder(worldY);
 
-        // ============ 拖拽 UI Ghost（Bug 4 fix：让 ghost 显示在 InventoryPanel 之上）============
-        // UI Ghost 是一个 UI Image 节点，挂在 BattleHud Canvas 下（与 InventoryPanel 同级），
-        // 渲染顺序由 hierarchy 决定 —— 始终 SetAsLastSibling 保证在所有 panel 之上。
-        // World ghost (Battle_SpawnUnit) 不再用于 inventory drag。
-
-        private static GameObject _uiGhost;
-        private static UnityEngine.UI.Image _uiGhostImage;
-        private const float UI_GHOST_CURSOR_PIVOT_X = 0.5f;
-        private const float UI_GHOST_CURSOR_PIVOT_Y = 0.25f;
-
-        // 2026-07-01 用户修正：拖拽武将图以鼠标为锚点，鼠标落在图底部向上 1/4 高度处。
-        // pivotX/pivotY 参数保留用于 Lua 兼容，实际 UI ghost 使用固定鼠标锚点。
-        public static void Battle_ShowUIGhost(string spriteKey, float sx, float sy, float pivotX, float pivotY)
-        {
-            EnsureUIGhost();
-            if (_uiGhost == null) return;
-            // 加载 sprite（与 SetSprite 同 fallback 链）
-            var sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}_idle_0.png");
-            if (sprite == null) sprite = HeroDefense.Engine.Host.LuaHost.LoadSprite($"resources/art/{spriteKey}_walk_0.png");
-            if (_uiGhostImage != null)
-            {
-                _uiGhostImage.sprite = sprite;
-                _uiGhostImage.color = new Color(1f, 1f, 1f, 0.85f);
-                // Round 8 fix: ghost 尺寸跟随 sprite 实际像素（1:1 像素 → 1:1 sizeDelta），
-                // 让多占位卡（256×192 等）显示等同实际占位大小，而不是被钉死成 70×70。
-                if (sprite != null)
-                {
-                    var rt = _uiGhost.GetComponent<RectTransform>();
-                    if (rt != null)
-                    {
-                        rt.sizeDelta = new Vector2(sprite.rect.width, sprite.rect.height);
-                        rt.pivot = new Vector2(UI_GHOST_CURSOR_PIVOT_X, UI_GHOST_CURSOR_PIVOT_Y);
-                    }
-                }
-            }
-            _uiGhost.SetActive(true);
-            _uiGhost.transform.SetAsLastSibling();  // 确保最上层
-            SetUIGhostScreenPos(sx, sy);
-        }
-
-        public static void Battle_MoveUIGhost(float sx, float sy)
-        {
-            if (_uiGhost == null || !_uiGhost.activeSelf) return;
-            SetUIGhostScreenPos(sx, sy);
-        }
-
-        public static void Battle_HideUIGhost()
-        {
-            if (_uiGhost != null) _uiGhost.SetActive(false);
-        }
-
-        // 检测屏幕坐标是否在 InventoryPanel UI rect 内 — 拖拽逻辑用来跳过战场 cell 判定
-        // 缓存 InventoryPanel 引用，避免每帧 Find
-        private static RectTransform _invPanelRT;
-        private static Canvas _invPanelCanvas;
-        private static Transform _invSlotsContainer;  // Issue 3 — Slots 容器（每个 child 是一个 slot RT）
-        public static bool Battle_IsPointerOverInventory(float sx, float sy)
-        {
-            if (_invPanelRT == null)
-            {
-                var rootWindow = GameObject.Find("RootWindow");
-                if (rootWindow == null) return false;
-                var p = rootWindow.transform.Find("BattleHud/InventoryPanel");
-                if (p == null) return false;
-                _invPanelRT = p as RectTransform;
-                _invPanelCanvas = p.GetComponentInParent<Canvas>();
-                // Round 10 (2026-05-15) — Slots 可能直接挂 InventoryPanel 下（首次），
-                // 也可能在 InventoryPanel/Viewport/Slots（InventoryController.EnsureScrollableLayout 后）
-                _invSlotsContainer = p.Find("Slots");
-                if (_invSlotsContainer == null) _invSlotsContainer = p.Find("Viewport/Slots");
-            }
-            if (_invPanelRT == null) return false;
-            // InventoryPanel 必须 active（关闭时不挡）
-            if (!_invPanelRT.gameObject.activeInHierarchy) return false;
-            Camera cam = null;
-            if (_invPanelCanvas != null && _invPanelCanvas.renderMode == RenderMode.ScreenSpaceCamera)
-                cam = _invPanelCanvas.worldCamera;
-            return RectTransformUtility.RectangleContainsScreenPoint(_invPanelRT, new Vector2(sx, sy), cam);
-        }
-
-        // F3 (2026-06-01)：检测屏幕坐标是否在 ShopPanel UI rect 内 — 拖场上单位入商场回收用。
-        // ShopPanel 由 ShopController 程序化建于 BattleHud 下；关闭时 SetActive(false) → activeInHierarchy 守卫天然"没开就不拦"。
-        private static RectTransform _shopPanelRT;
-        private static Canvas _shopPanelCanvas;
-        public static bool Battle_IsPointerOverShop(float sx, float sy)
-        {
-            if (_shopPanelRT == null)
-            {
-                var rootWindow = GameObject.Find("RootWindow");
-                if (rootWindow == null) return false;
-                var p = rootWindow.transform.Find("BattleHud/ShopPanel");
-                if (p == null) return false;
-                _shopPanelRT = p as RectTransform;
-                _shopPanelCanvas = p.GetComponentInParent<Canvas>();
-            }
-            if (_shopPanelRT == null) return false;
-            if (!_shopPanelRT.gameObject.activeInHierarchy) return false;
-            Camera cam = null;
-            if (_shopPanelCanvas != null && _shopPanelCanvas.renderMode == RenderMode.ScreenSpaceCamera)
-                cam = _shopPanelCanvas.worldCamera;
-            return RectTransformUtility.RectangleContainsScreenPoint(_shopPanelRT, new Vector2(sx, sy), cam);
-        }
-
-        // ============ Issue 3 — 背包 slot index 反查（拖拽落点 → slot 1-based 索引） ============
-        // 用法：Lua drag_logic 在 OnDragEnd 时若 over_inv，调用此 API 拿到 target slot index，
-        // 然后配合 source slot index 调 Stash_SwapByIndex / Merge_*_InStash 完成背包内拖动语义。
-        //
-        // 反查策略：遍历 InventoryPanel/Slots 子节点（每个就是一个 slot 容器 RT），
-        // 用 RectTransformUtility.RectangleContainsScreenPoint 命中谁就返回 (i + 1)。
-        // 返回 -1 = 不在任何 slot 内（在 panel 但点的是 panel 背景 / 空隙）。
-        public static int Battle_GetInventorySlotAtScreen(float sx, float sy)
-        {
-            // 先确保 _invPanelRT / _invSlotsContainer 已初始化
-            if (_invPanelRT == null)
-            {
-                // 调一次 IsPointerOverInventory 复用查找路径
-                Battle_IsPointerOverInventory(sx, sy);
-            }
-            if (_invSlotsContainer == null) return -1;
-            if (!_invPanelRT.gameObject.activeInHierarchy) return -1;
-            Camera cam = null;
-            if (_invPanelCanvas != null && _invPanelCanvas.renderMode == RenderMode.ScreenSpaceCamera)
-                cam = _invPanelCanvas.worldCamera;
-            var pt = new Vector2(sx, sy);
-            int n = _invSlotsContainer.childCount;
-            for (int i = 0; i < n; i++)
-            {
-                var slotTr = _invSlotsContainer.GetChild(i) as RectTransform;
-                if (slotTr == null) continue;
-                if (!slotTr.gameObject.activeInHierarchy) continue;
-                if (RectTransformUtility.RectangleContainsScreenPoint(slotTr, pt, cam))
-                {
-                    return i + 1;  // Lua 1-based
-                }
-            }
-            return -1;
-        }
-
-        // ============ 热更 UI 迁移（2026-06-17 HUD 簇）：库存/商场面板引用由 Lua 注册 ============
-        // 旧版从 BattleHud/InventoryPanel|ShopPanel 查找；迁移后面板在 Panel_RootWindow 下、路径不同，
-        // 改由 Lua 加载面板后调本 setter 注入引用。slotsListGo 传 List 控件根 → 自动解析其 ScrollRect.content 为卡容器。
-        public static void Battle_SetInventoryRefs(GameObject invPanel, GameObject slotsListGo)
-        {
-            _invPanelRT = invPanel != null ? invPanel.transform as RectTransform : null;
-            _invPanelCanvas = invPanel != null ? invPanel.GetComponentInParent<Canvas>() : null;
-            _invSlotsContainer = null;
-            if (slotsListGo != null)
-            {
-                var sr = slotsListGo.GetComponent<UnityEngine.UI.ScrollRect>();
-                _invSlotsContainer = (sr != null && sr.content != null) ? sr.content : slotsListGo.transform;
-            }
-        }
-
-        public static void Battle_SetShopRef(GameObject shopPanel)
-        {
-            _shopPanelRT = shopPanel != null ? shopPanel.transform as RectTransform : null;
-            _shopPanelCanvas = shopPanel != null ? shopPanel.GetComponentInParent<Canvas>() : null;
-        }
-
-        private static void EnsureUIGhost()
-        {
-            if (_uiGhost != null) return;
-            // 已迁热更 UI：旧 BattleHud 始终 inactive → ghost 改挂 RootWindow（挂 inactive 节点下会不可见）。
-            // ghost SetAsLastSibling 保证渲染在所有 RootWindow 子面板之上。
-            GameObject parent = null;
-            var rootWindow = GameObject.Find("RootWindow");
-            if (rootWindow != null) parent = rootWindow;
-            if (parent == null) return;
-
-            _uiGhost = new GameObject("DragGhost",
-                typeof(RectTransform), typeof(CanvasRenderer), typeof(UnityEngine.UI.Image));
-            _uiGhost.transform.SetParent(parent.transform, false);
-            var rt = _uiGhost.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0.5f, 0.5f);
-            rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.pivot = new Vector2(UI_GHOST_CURSOR_PIVOT_X, UI_GHOST_CURSOR_PIVOT_Y);
-            rt.sizeDelta = new Vector2(70, 70);
-            _uiGhostImage = _uiGhost.GetComponent<UnityEngine.UI.Image>();
-            _uiGhostImage.raycastTarget = false;  // 不拦截事件，让 InventoryPanel 卡仍可点
-            _uiGhost.SetActive(false);
-        }
-
-        private static void SetUIGhostScreenPos(float sx, float sy)
-        {
-            if (_uiGhost == null) return;
-            var rt = _uiGhost.GetComponent<RectTransform>();
-            var parentRt = rt.parent as RectTransform;
-            if (parentRt == null) return;
-            // Canvas Camera 路由（ScreenSpaceCamera 模式必传 worldCamera）
-            Camera cam = null;
-            var canvas = _uiGhost.GetComponentInParent<Canvas>();
-            if (canvas != null && canvas.renderMode == RenderMode.ScreenSpaceCamera) cam = canvas.worldCamera;
-            Vector2 local;
-            RectTransformUtility.ScreenPointToLocalPointInRectangle(parentRt, new Vector2(sx, sy), cam, out local);
-            rt.anchoredPosition = local;
-        }
-
         // ============ 时间 1 方法 ============
 
-        // 业务暂停 flag — 怪 / 攻击 / 投射物 / HitFeedback 等自检。
+        // 业务暂停 flag — 位移 / 攻击 / 投射物 / HitFeedback 等自检。
         public static bool BattlePaused;
 
         // 暂停时一律 Time.timeScale=0：冻结全部缩放时间逻辑（帧动画 / 粒子特效 / 位移 / Lua 计时器）。
@@ -2183,10 +3099,7 @@ namespace HeroDefense.Battle
             }
         }
 
-        // 权威对局时钟（秒）。v2 批 0 P0 抢修（2026-06-13）：
-        //   skill_active_scheduler / buff_runtime / damage_stats 等 Lua 模块均以 Battle_GetGameTime() 为唯一时基，
-        //   此前该函数全工程未定义 → 调度器/buff 容器首行 `if Battle_GetGameTime == nil then return` 整段短路
-        //   → 武将主动技一次都放不出来、buff 永不到期。此处补上即恢复。
+        // 对局表现时钟（秒）。
         // 返回 Time.time（受 timeScale 缩放的时钟）：Battle_SetTimeScale 暂停时 timeScale=0 → Time.time 冻结，
         //   故对局暂停期间本时钟自然停走，CD/buff 不流逝（无需额外 BattlePaused 判定）。
         // 相对比较语义：Lua 侧统一用 now+duration 存到期时间、再与 now 比，基准大小无关，只需单调 + 暂停冻结。
@@ -2198,124 +3111,6 @@ namespace HeroDefense.Battle
         // ============ 便利查询（给 Lua 调试 / 业务可选用） ============
 
         public static int Battle_GetUnitCount() => _units.Count;
-        public static int Battle_GetEnemyCount() => _enemies.Count;
         public static int Battle_GetProjectileCount() => _projectiles.Count;
-
-        // ============ Phase 2 Task 2.6：营帐 HP 查询（CampDetailController 用，避免 Controller 拆 Lua state） ============
-
-        /// <summary>读 Lua `Camp_State.hp`。未初始化 → 0。</summary>
-        public static int Battle_GetCampHp()
-        {
-#if XLUA
-            try
-            {
-                var env = HeroDefense.Engine.Host.LuaHost.Env;
-                if (env == null) return 0;
-                return env.Global.GetInPath<int>("Camp_State.hp");
-            }
-            catch { return 0; }
-#else
-            return 0;
-#endif
-        }
-
-        /// <summary>读 Lua `Camp_State.max_hp`。未初始化 → 1（避免除零）。</summary>
-        public static int Battle_GetCampMaxHp()
-        {
-#if XLUA
-            try
-            {
-                var env = HeroDefense.Engine.Host.LuaHost.Env;
-                if (env == null) return 1;
-                int v = env.Global.GetInPath<int>("Camp_State.max_hp");
-                return v > 0 ? v : 1;
-            }
-            catch { return 1; }
-#else
-            return 1;
-#endif
-        }
-
-        // ============ Phase 2.10 伤害统计行格式化（DamageStatsController 用，避免 Controller 直接拆 LuaTable）============
-
-        /// <summary>
-        /// luaItem = DamageStats_GetSortedList() 返回 list 内单个 row 表，含字段
-        ///   handle: long, npc_id: int, lv: int, total_damage: int, dps: float
-        /// 返回 "{name} lv{lv}" — 优先查 npc.txt 拿中文 name；查不到回退 "#{npc_id} lv{lv}"
-        /// </summary>
-        public static string FormatDamageRowName(object luaItem)
-        {
-#if XLUA
-            if (!(luaItem is XLua.LuaTable t)) return "";
-            int npcId = 0, lv = 1;
-            try { npcId = t.Get<string, int>("npc_id"); } catch { /* silent */ }
-            try { lv = t.Get<string, int>("lv"); } catch { /* silent */ }
-            string nameCn = null;
-            try
-            {
-                var cm = ConfigManager.Instance;
-                if (cm != null)
-                {
-                    cm.LoadIfNeeded();
-                    var row = cm.GetTableInfo("npc", "id", npcId);
-                    if (row != null) nameCn = cm.GetValue<string>(row, "name", null);
-                }
-            }
-            catch { /* silent */ }
-            if (string.IsNullOrEmpty(nameCn)) return $"#{npcId} lv{lv}";
-            return $"{nameCn} lv{lv}";
-#else
-            return "";
-#endif
-        }
-
-        // ============ Phase 2.7 技能卡释放（SkillCardController 用） ============
-
-        /// <summary>
-        /// 调 Lua `SkillCard_Cast(skill_id, target_row, target_col)`，
-        /// 按 cast_target 在 Lua 侧分支（none/cell/enemy）。
-        /// 返回 bool（成功扣 1）。Lua 不就位时返回 false。
-        /// </summary>
-        public static bool Battle_SkillCardCast(int skillId, int targetRow, int targetCol)
-        {
-#if XLUA
-            try
-            {
-                var env = HeroDefense.Engine.Host.LuaHost.Env;
-                if (env == null) return false;
-                var fn = env.Global.Get<XLua.LuaFunction>("SkillCard_Cast");
-                if (fn == null) return false;
-                var ret = fn.Call(skillId, targetRow, targetCol);
-                fn.Dispose();
-                if (ret == null || ret.Length == 0) return false;
-                if (ret[0] is bool b) return b;
-                return ret[0] != null;
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogWarning($"[BattleBridge] Battle_SkillCardCast 失败: {e.Message}");
-                return false;
-            }
-#else
-            return false;
-#endif
-        }
-
-        /// <summary>
-        /// 返回 "{total_damage}  ({dps:F1}/s)" — total + dps 一行展示
-        /// </summary>
-        public static string FormatDamageRowDamage(object luaItem)
-        {
-#if XLUA
-            if (!(luaItem is XLua.LuaTable t)) return "0";
-            int tot = 0;
-            float dps = 0f;
-            try { tot = t.Get<string, int>("total_damage"); } catch { /* silent */ }
-            try { dps = t.Get<string, float>("dps"); } catch { /* silent */ }
-            return $"{tot}  ({dps:F1}/s)";
-#else
-            return "0";
-#endif
-        }
     }
 }

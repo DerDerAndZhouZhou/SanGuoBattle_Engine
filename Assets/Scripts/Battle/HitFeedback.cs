@@ -105,7 +105,7 @@ namespace HeroDefense.Battle
         private static readonly int FlashColorID = Shader.PropertyToID("_FlashColor");
         private static readonly int FlashAmountID = Shader.PropertyToID("_FlashAmount");
         // R5/F3 (2026-06-11)：闪白改走 MaterialPropertyBlock（sr.material 每次访问实例化材质 →
-        // 与 Battle_SetEnemyHsv 共享材质的方案冲突且逐怪 DrawCall）。单线程复用一个 MPB。
+        // 不创建逐单位材质实例，单线程复用一个 MPB。
         private static MaterialPropertyBlock _flashMpb;
 
         // ============ 主入口 ============

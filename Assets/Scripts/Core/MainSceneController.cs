@@ -132,7 +132,8 @@ namespace HeroDefense.Core
                           ?? ResourceHost.LoadSprite($"resources/art/bg/{key}.jpg", logMissing: false);
                 if (sprite == null)
                 {
-                    Debug.LogWarning($"[MainSceneController] 主菜单背景缺失 (.png/.jpg 都没有): resources/art/bg/{key}");
+                    // 正式美术可晚于玩法代码接入；缺图时保留相机底色，不视为运行异常。
+                    Debug.Log($"[MainSceneController] 主菜单背景尚未接入，使用相机底色: resources/art/bg/{key}");
                     return;
                 }
 

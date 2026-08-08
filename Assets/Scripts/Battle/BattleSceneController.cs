@@ -14,14 +14,14 @@ namespace HeroDefense.Battle
     /// 必须 Awake + OnEnable + Start + SceneManager.sceneLoaded 4 路兜底，
     /// 配 _isReady flag 防重入。
     ///
-    /// 入口：调 Lua 全局 `Battle_OnSceneReady(level_id)`。level_id 从 GameManager 注入（或默认 1001 MVP）。
+    /// 入口：调 Lua 全局 `Battle_OnSceneReady(level_id)`。level_id 从 GameManager 注入（或默认 1）。
     ///
     /// 0 SerializeField — pendingLevelId 由 SceneLoader 切场景前通过静态属性注入。
     /// </summary>
     public class BattleSceneController : MonoBehaviour
     {
-        /// <summary>外部进入对局前必须 set。如未 set 默认走 1001 MVP（黄巾起义-1）。</summary>
-        public static int PendingLevelId = 1001;
+        /// <summary>外部进入对局前可 set；未 set 时进入唯一正式 PVE 关卡 1。</summary>
+        public static int PendingLevelId = 1;
 
         private bool _isReady;
         private bool _eventBound;
@@ -267,21 +267,21 @@ namespace HeroDefense.Battle
             Debug.Log($"[BSC] BG fit camera: camW={camW:F2} camH={camH:F2} sprite={sprSize.x:F2}x{sprSize.y:F2} scale={scale:F3}");
         }
 
-        /// <summary>从 level.txt 读 level_id → grid_id。失败回退 grid_id=1。</summary>
+        /// <summary>从 level.tab 读 level_id → grid_id。失败回退正式 grid_id=3。</summary>
         private static int ResolveGridIdForLevel(int levelId)
         {
             try
             {
                 var cm = ConfigManager.Instance;
-                if (cm == null) return 1;
+                if (cm == null) return 3;
                 cm.LoadIfNeeded();
                 var row = cm.GetTableInfo("level", "id", levelId);
-                if (row == null) return 1;
-                return cm.GetValue<int>(row, "grid_id", 1);
+                if (row == null) return 3;
+                return cm.GetValue<int>(row, "grid_id", 3);
             }
             catch
             {
-                return 1;
+                return 3;
             }
         }
 

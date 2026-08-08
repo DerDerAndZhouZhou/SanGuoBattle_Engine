@@ -327,15 +327,28 @@ namespace HeroDefense.UI.Xml
             if (go != null) go.transform.SetAsLastSibling();
         }
 
-        /// <summary>给控件挂拖拽源组件（DragInputBridge）+ 设来源（npcId + source 类型如 "inventory"）。
-        /// 热更 UI 的库存卡 = 可拖拽部署源；XML builder 无法附加该组件 → 经此桥运行时 AddComponent + SetSource。
-        /// 业务（Battle_OnDragBegin/Move/End）不变，仅补回组件挂载这一步。</summary>
-        public static void AttachDragSource(GameObject card, long npcId, string source)
+        /// <summary>
+        /// 给任意热更 UI 控件挂通用按下/松开/取消桥。
+        /// C# 不计时、不判断长按是否成立，Lua 负责 unscaled 时长与业务命令。
+        /// </summary>
+        public static void AttachPressBridge(
+            GameObject go,
+            string downFunction,
+            string upFunction,
+            string cancelFunction)
         {
-            if (card == null) return;
-            var dib = card.GetComponent<HeroDefense.Battle.DragInputBridge>();
-            if (dib == null) dib = card.AddComponent<HeroDefense.Battle.DragInputBridge>();
-            dib.SetSource(npcId, source ?? "");
+            if (go == null) return;
+            var bridge =
+                go.GetComponent<HeroDefense.UI.UIPressBridge>();
+            if (bridge == null)
+            {
+                bridge =
+                    go.AddComponent<HeroDefense.UI.UIPressBridge>();
+            }
+            bridge.SetCallbacks(
+                downFunction,
+                upFunction,
+                cancelFunction);
         }
 
         // ====================================================================

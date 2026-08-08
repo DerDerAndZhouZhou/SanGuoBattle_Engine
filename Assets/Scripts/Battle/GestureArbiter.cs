@@ -5,18 +5,17 @@ using HeroDefense.Engine.Host;
 namespace HeroDefense.Battle
 {
     /// <summary>
-    /// 共享手势仲裁器（R3a，2026-06-11 · tech-research §3 炸弹①"输入三写"的手势统一层）。
+    /// 共享手势仲裁器。
     ///
     /// 纯手势分类状态机：按下计时 + 位移 slop + double-tap 时间窗/半径比对。
-    /// DragInputBridge（背包/商店 UI 卡，EventSystem UI 路）与 UnitView（场上单位，
-    /// Physics2DRaycaster 路）两路共用 —— 只在各自组件里转发 Pointer 事件进来，
-    /// 分类结果经委托回调出去，杜绝两套阈值/状态机漂移。
+    /// EventSystem 输入组件只负责转发 Pointer 事件；
+    /// 分类结果经委托回调，避免阈值和状态机漂移。
     ///
     /// 手势语义（tech-research F1 拍板）：
     ///   - 拖拽 = 按住 ≥ drag_press_threshold_ms(180) 或 位移 > drag_move_threshold_px(8)
     ///   - tap  = 快速松手（未触发拖拽），**立即回调**（不等双击窗，详情秒弹）
     ///   - 双击 = 双 tap 间隔 ≤ double_tap_window_ms(250) 且两点距 ≤ double_tap_radius_px(20)
-    ///            且同一 owner（同一张卡/同一单位）；第二击回调 DoubleTapped（业务先 ClearInspectTarget）
+    ///            且同一 owner；第二击回调 DoubleTapped。
     ///
     /// 0 SerializeField；阈值全走 GameConfig；与 Time.timeScale 无关（realtimeSinceStartup）。
     /// </summary>

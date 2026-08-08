@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.IO;
 using System.Xml.Linq;
 using UnityEngine;
 using HeroDefense.Config;
@@ -14,12 +13,11 @@ namespace HeroDefense.Engine.Host
 {
     /// <summary>
     /// Lua 虚拟机门面，统一暴露 Include / LoadModuleListFromFile / LoadAllModule。
-    /// 业务 Lua 走 Game/ 下 scripts(框架) / modules(业务) / ui(界面) 三层，通过 ResourceHost 读取（五层重组 v3）。
+    /// 业务 Lua 走 Game/ 下 scripts（框架）/ modules（业务）/ ui（界面）三层，通过 ResourceHost 读取。
     /// </summary>
     public static class LuaHost
     {
-        /// <summary>当前打包/运行作用域（≈BHQSL m_strRunPlace）。决定 config.xml 加载哪个作用域段 + manifest 打包过滤。
-        /// 客户端唯一作用域；未来服务器版改此值即切换作用域（五层重组 v3, 2026-06-17）。</summary>
+        /// <summary>当前打包/运行作用域；决定 config.xml 加载哪个作用域段和 manifest 过滤。</summary>
         public const string ActiveScope = "GameClient";
 
 #if XLUA
@@ -73,38 +71,49 @@ namespace HeroDefense.Engine.Host
             // Lua 端调用：直接 `Battle_SpawnUnit(...)`（全局）或 `CS.HeroDefense.Battle.BattleBridge.XXX(...)`（class）。
             // 单位 5
             _env.Global.Set("Battle_SpawnUnit",       (System.Func<int, int, int, long>)         BattleBridge.Battle_SpawnUnit);
+            _env.Global.Set("Battle_SpawnUnitForTeam",(System.Func<int, int, int, int, long>)    BattleBridge.Battle_SpawnUnitForTeam);
             _env.Global.Set("Battle_DestroyUnit",     (System.Action<long>)                      BattleBridge.Battle_DestroyUnit);
             _env.Global.Set("Battle_SetSprite",       (System.Action<long, string>)              BattleBridge.Battle_SetSprite);
-            // v2 批 0（2026-06-13）：注册 3 参重载（攻速倍率 → 攻击动画 fps 缩放）。此前注册 2 参版 → Lua 传的第 3 参被 xLua 吞、ScaledFps 恒按基础 fps。
+            // 注册 3 参重载（攻速倍率 → 攻击动画 fps 缩放）。
             // 兼容性：只传 2 参的调用者（walk/idle/die 多处）→ xLua 补 speedMult=0 → ScaledFps 内 `speedMult>0f` 判定不进缩放分支 → 仍按基础 fps，零回归。
             _env.Global.Set("Battle_PlayAnim",        (System.Action<long, string, float>)       BattleBridge.Battle_PlayAnim);
-            // v2 批 1b：取动画时长（attack 动画时长 → 出手点定时 / 普攻减 CD）。Func<long,string,float,float>。
+            // 取动画时长（attack 动画时长 → 出手点定时）。Func<long,string,float,float>。
             _env.Global.Set("Battle_GetAnimLen",      (System.Func<long, string, float, float>)  BattleBridge.Battle_GetAnimLen);
+            // 动画资源元数据查询：无场上 handle，Lua Match 只在建局时冻结其返回值。
+            _env.Global.Set("Battle_GetAnimStateDurationMs",
+                (System.Func<string, string, int, int>) BattleBridge.Battle_GetAnimStateDurationMs);
+            _env.Global.Set("Battle_GetAnimEventRatioBp",
+                (System.Func<string, string, string, int, int>) BattleBridge.Battle_GetAnimEventRatioBp);
+            // 复合队伍兵模：只返回表现是否执行；兵模本身没有 handle、伤害或 Lua 回调。
+            _env.Global.Set("Battle_SquadBind",
+                (System.Func<long, int, int, bool>) BattleBridge.Battle_SquadBind);
+            _env.Global.Set("Battle_SquadSetFormation",
+                (System.Func<long, int, string, int, bool>) BattleBridge.Battle_SquadSetFormation);
+            _env.Global.Set("Battle_SquadPlayState",
+                (System.Func<long, string, float, bool>) BattleBridge.Battle_SquadPlayState);
+            _env.Global.Set("Battle_SquadPlayAttack",
+                (System.Func<long, string, float, long, string, int, bool>) BattleBridge.Battle_SquadPlayAttack);
+            _env.Global.Set("Battle_SquadApplyCasualties",
+                (System.Func<long, int, int, string, string, int, int, bool>) BattleBridge.Battle_SquadApplyCasualties);
+            _env.Global.Set("Battle_SquadRefill",
+                (System.Func<long, int, int, string, bool>) BattleBridge.Battle_SquadRefill);
+            _env.Global.Set("Battle_SquadDetachHeroAndRetreat",
+                (System.Func<long, string, int, bool>) BattleBridge.Battle_SquadDetachHeroAndRetreat);
+            _env.Global.Set("Battle_SquadGetVisualCount",
+                (System.Func<long, int>) BattleBridge.Battle_SquadGetVisualCount);
+            _env.Global.Set("Battle_SquadGetGhostCount",
+                (System.Func<long, int>) BattleBridge.Battle_SquadGetGhostCount);
+            _env.Global.Set("Battle_SquadClear",
+                (System.Action<long>) BattleBridge.Battle_SquadClear);
             _env.Global.Set("Battle_SetUnitFacing",   (System.Action<long, bool>)                BattleBridge.Battle_SetUnitFacing);
+            _env.Global.Set("Battle_SetUnitOverlay",  (System.Func<long, int, string, bool>)     BattleBridge.Battle_SetUnitOverlay);
+            _env.Global.Set("Battle_ClearUnitOverlays",(System.Action<long>)                     BattleBridge.Battle_ClearUnitOverlays);
             _env.Global.Set("Battle_SetWorldPosition",(System.Action<long, float, float>)        BattleBridge.Battle_SetWorldPosition);
-            _env.Global.Set("Battle_GetUnitCellAndStop",(System.Func<long, int>)                BattleBridge.Battle_GetUnitCellAndStop);   // 2026-06-14 移动中再拖:读当前视觉格 cellId + 停 GridMover
-            _env.Global.Set("Battle_GetUnitCell",     (System.Func<long, int>)                   BattleBridge.Battle_GetUnitCell);          // 2026-06-14 只读当前视觉格(拖拽中动态算路径,不停)
-            // v2 批 1b 方案A：加第 3 参 speed（逐单位移速）。旧 2 参 Lua 调用 → xLua 补 speed=0 → BeginPath 走 ConfigSpeed 兜底，零回归。
-            _env.Global.Set("Battle_UnitWalkPath",    (System.Action<long, string, float>)       BattleBridge.Battle_UnitWalkPath);   // R2 玩家移动：沿 cell 路径走("r,c;r,c", speed)
-            // 敌人 5
-            _env.Global.Set("Battle_SpawnEnemy",      (System.Func<string, int, float, float, long>) BattleBridge.Battle_SpawnEnemy);
-            _env.Global.Set("Battle_SpawnEnemyAtRow", (System.Func<string, int, float, float, int, long>) BattleBridge.Battle_SpawnEnemyAtRow);
-            _env.Global.Set("Battle_SetEnemyHpBar",   (System.Action<long, float>)               BattleBridge.Battle_SetEnemyHpBar);
-            _env.Global.Set("Battle_SetEnemySpeed",   (System.Action<long, float>)               BattleBridge.Battle_SetEnemySpeed);
-            _env.Global.Set("Battle_SetEnemyHalted",  (System.Action<long, bool>)                BattleBridge.Battle_SetEnemyHalted);
-            _env.Global.Set("Battle_GetEnemyRow",     (System.Func<long, int>)                   BattleBridge.Battle_GetEnemyRow);
-            _env.Global.Set("Battle_GetEnemyCol",     (System.Func<long, int>)                   BattleBridge.Battle_GetEnemyCol);
-            _env.Global.Set("Battle_GetEnemyCellAndStop", (System.Func<long, int>)               BattleBridge.Battle_GetEnemyCellAndStop);
-            // T237 怪物 HSV 暗化（怪 = 武将/兵种黑暗变体）
-            _env.Global.Set("Battle_SetEnemyHsv",     (System.Action<long, float, float, float>) BattleBridge.Battle_SetEnemyHsv);
-            // R6 怪网格步进（块3.2 greedy 选格在 Lua，C# 只做单格位移）+ 瞬移（knockback/测试）
-            _env.Global.Set("Battle_EnemyGridMode",   (System.Action<long>)                      BattleBridge.Battle_EnemyGridMode);
-            _env.Global.Set("Battle_EnemyStepToCell", (System.Func<long, int, int, bool>)        BattleBridge.Battle_EnemyStepToCell);
-            _env.Global.Set("Battle_EnemyStepToXY",   (System.Func<long, float, float, bool>)    BattleBridge.Battle_EnemyStepToXY);  // P2b 围攻：怪连续移动到世界点（环位/沿行推进）
-            _env.Global.Set("Battle_SetEnemyCell",    (System.Action<long, int, int>)            BattleBridge.Battle_SetEnemyCell);
-            // v2 批 1b：击退怪 cells 格（etKnockback effect；远离基地 +col + bounds-clamp 瞬移）。Action<long,float>。
-            _env.Global.Set("Battle_KnockbackEnemy",  (System.Action<long, float>)               BattleBridge.Battle_KnockbackEnemy);
-            // 投射物（R5 落格 ToCell + 连弩 LineStop；v2 批 1b 补注册 Tracking + Line —— 技能线投射物需要，此前 C# 有方法但 LuaHost 漏挂）
+            _env.Global.Set("Battle_GetUnitCellAndStop",(System.Func<long, int>)                BattleBridge.Battle_GetUnitCellAndStop);
+            _env.Global.Set("Battle_GetUnitCell",     (System.Func<long, int>)                   BattleBridge.Battle_GetUnitCell);
+            // 第 3 参 speed 为单位移速；传 0 时走配置兜底。
+            _env.Global.Set("Battle_UnitWalkPath",    (System.Action<long, string, float>)       BattleBridge.Battle_UnitWalkPath);
+            // 投射物
             _env.Global.Set("Battle_SpawnProjectile", (System.Func<long, long, float, long>)     BattleBridge.Battle_SpawnProjectile);
             _env.Global.Set("Battle_SpawnProjectileTracking", (System.Func<long, long, string, float, long>)                       BattleBridge.Battle_SpawnProjectileTracking);
             _env.Global.Set("Battle_SpawnProjectileToCell",   (System.Func<long, int, int, string, float, long>)                   BattleBridge.Battle_SpawnProjectileToCell);
@@ -120,36 +129,27 @@ namespace HeroDefense.Engine.Host
             _env.Global.Set("Battle_ScreenToCellCol", (System.Func<float, float, int>)           BattleBridge.Battle_ScreenToCellCol);
             _env.Global.Set("Battle_ScreenToWorldX",  (System.Func<float, float, float>)         BattleBridge.Battle_ScreenToWorldX);
             _env.Global.Set("Battle_ScreenToWorldY",  (System.Func<float, float, float>)         BattleBridge.Battle_ScreenToWorldY);
-            // 单位变换（拖拽 ghost 用）
+            // 单位变换
             _env.Global.Set("Battle_SetAlpha",        (System.Action<long, float>)               BattleBridge.Battle_SetAlpha);
             _env.Global.Set("Battle_SetScale",        (System.Action<long, float>)               BattleBridge.Battle_SetScale);
-            // UI Ghost（Bug 4 fix — 拖拽 inventory 卡时显示在 InventoryPanel 之上）
-            _env.Global.Set("Battle_ShowUIGhost",     (System.Action<string, float, float, float, float>) BattleBridge.Battle_ShowUIGhost);
-            _env.Global.Set("Battle_MoveUIGhost",     (System.Action<float, float>)              BattleBridge.Battle_MoveUIGhost);
-            _env.Global.Set("Battle_HideUIGhost",     (System.Action)                            BattleBridge.Battle_HideUIGhost);
-            _env.Global.Set("Battle_IsPointerOverInventory", (System.Func<float, float, bool>)   BattleBridge.Battle_IsPointerOverInventory);
-            _env.Global.Set("Battle_IsPointerOverShop", (System.Func<float, float, bool>)        BattleBridge.Battle_IsPointerOverShop);   // F3 商场回收拖放命中
-            // Round 8 (2026-05-15) — Issue 1 真因：背包合成/升级/swap 全失效，Lua 看 nil 不调
-            _env.Global.Set("Battle_GetInventorySlotAtScreen", (System.Func<float, float, int>) BattleBridge.Battle_GetInventorySlotAtScreen);
-            // 边界 4
+            // 网格边界
             _env.Global.Set("Battle_IsCellInBounds",  (System.Func<int, int, bool>)              BattleBridge.Battle_IsCellInBounds);
-            _env.Global.Set("Battle_IsCellInCamp",    (System.Func<int, int, bool>)              BattleBridge.Battle_IsCellInCamp);
-            // 三区桥（R1b 2026-06-10 加，R1c 落点门控依赖；LuaHost 是手工白名单注册非反射 → 必须显式补）
+            // 布局区域查询（通用地图/编辑器能力）
             _env.Global.Set("Battle_SetZones",          (System.Action<int, int>)                BattleBridge.Battle_SetZones);
             _env.Global.Set("Battle_IsCellInOwnZone",   (System.Func<int, int, bool>)            BattleBridge.Battle_IsCellInOwnZone);
             _env.Global.Set("Battle_IsCellInPublicZone",(System.Func<int, int, bool>)            BattleBridge.Battle_IsCellInPublicZone);
             _env.Global.Set("Battle_IsCellInEnemyZone", (System.Func<int, int, bool>)            BattleBridge.Battle_IsCellInEnemyZone);
-            // T202 (2026-05-21) — 玩法模式 grid 视觉样式（R1d 保留；解锁动画桥已删）
-            _env.Global.Set("Battle_SetGridVisualStyle",   (System.Action<string>)               BattleBridge.Battle_SetGridVisualStyle);
             _env.Global.Set("Battle_ReloadScene2DLayout",  (System.Func<bool>)                    BattleBridge.Battle_ReloadScene2DLayout);
             _env.Global.Set("Battle_ReloadScene3DLayout",  (System.Func<bool>)                    BattleBridge.Battle_ReloadScene3DLayout);
             // T203 (2026-05-21) — 单位头顶血量条可见性（拖拽时隐藏 / 落地恢复）
             _env.Global.Set("Battle_SetUnitHpBarVisible",  (System.Action<long, bool>)           BattleBridge.Battle_SetUnitHpBarVisible);
+            _env.Global.Set("Battle_SetUnitStatusBars",    (System.Action<long, float, float>)   BattleBridge.Battle_SetUnitStatusBars);
+            _env.Global.Set("Battle_SetUnitStatusBarMode", (System.Action<long, string>)         BattleBridge.Battle_SetUnitStatusBarMode);
             // 排序 1
             _env.Global.Set("Battle_CalcSortingOrder",(System.Func<float, int>)                  BattleBridge.Battle_CalcSortingOrder);
             // 时间 1
             _env.Global.Set("Battle_SetTimeScale",    (System.Action<float>)                     BattleBridge.Battle_SetTimeScale);
-            _env.Global.Set("Battle_GetGameTime",     (System.Func<float>)                       BattleBridge.Battle_GetGameTime);   // v2 批 0 P0：权威对局时钟（暂停冻结）→ 恢复主动技调度/buff 到期
+            _env.Global.Set("Battle_GetGameTime",     (System.Func<float>)                       BattleBridge.Battle_GetGameTime);
 
             // ============ 存档桥（核心循环 P0-2 / P0-3） ============
             // 通用 KV 存取 + 货币入库。业务（Lua）约定 key，C# 只提供存取通道。
@@ -185,15 +185,11 @@ namespace HeroDefense.Engine.Host
             _env.Global.Set("UI_ReloadTemplates", (System.Action)                             UI.Xml.HDUIXmlHost.ReloadTemplates);
             _env.Global.Set("UI_SetActive",    (System.Action<GameObject, bool>)              UI.Xml.HDUIXmlHost.SetActive);
             _env.Global.Set("UI_BringToFront", (System.Action<GameObject>)                    UI.Xml.HDUIXmlHost.BringToFront);
-            _env.Global.Set("UI_AttachDragSource", (System.Action<GameObject, long, string>)  UI.Xml.HDUIXmlHost.AttachDragSource);
-            // 热更 UI 迁移（HUD 簇）：库存/商场面板加载后由 Lua 注入引用给 BattleBridge（拖拽落点遮挡守卫 + slot 反查）
-            _env.Global.Set("Battle_SetInventoryRefs", (System.Action<GameObject, GameObject>) BattleBridge.Battle_SetInventoryRefs);
-            _env.Global.Set("Battle_SetShopRef",       (System.Action<GameObject>)             BattleBridge.Battle_SetShopRef);
-
+            _env.Global.Set("UI_AttachPressBridge", (System.Action<GameObject, string, string, string>) UI.Xml.HDUIXmlHost.AttachPressBridge);
             EnumRegistry.LoadIfNeeded();
             EnumRegistry.InjectToLua(_env);
 
-            // 框架层（scripts/modulelist.xml → scripts 模块；scripts/config.xml 按 ActiveScope 作用域段定序加载·五层重组 v3）
+            // 框架层（scripts/modulelist.xml → scripts 模块；scripts/config.xml 按 ActiveScope 作用域段定序加载）
             LoadModuleListFromFile("scripts/modulelist.xml");
             LoadAllModule();
 
@@ -244,10 +240,7 @@ namespace HeroDefense.Engine.Host
             }
         }
 
-        /// <summary>读模块清单，把模块下所有 .lua 加到待加载列表。
-        /// .xml 格式（推荐）：&lt;Modules&gt;&lt;Module Name="framework"/&gt;...&lt;/Modules&gt;
-        ///   每个 Module Name 是 lua/ 相对子路径，递归扫该路径下所有 .lua（按字母序）。
-        /// .txt 格式（兼容）：每行一个 lua 文件相对路径，# 或 // 开头跳过。</summary>
+        /// <summary>读取 XML 模块清单，把每个模块 config.xml 中声明的脚本加入待加载列表。</summary>
         public static void LoadModuleListFromFile(string relPath)
         {
             var text = ResourceHost.ReadText(relPath);
@@ -257,25 +250,18 @@ namespace HeroDefense.Engine.Host
                 return;
             }
 
-            if (relPath.EndsWith(".xml", System.StringComparison.OrdinalIgnoreCase))
+            if (!relPath.EndsWith(".xml", System.StringComparison.OrdinalIgnoreCase))
             {
-                LoadModuleListFromXml(text);
+                Debug.LogError($"[LuaHost] 模块清单必须是 XML: {relPath}");
                 return;
             }
-
-            // 旧 .txt 兼容路径：每行一个 .lua 文件
-            foreach (var rawLine in text.Split('\n'))
-            {
-                var line = rawLine.Trim().Replace("\r", "");
-                if (line.Length == 0 || line.StartsWith("#") || line.StartsWith("//")) continue;
-                _pending.Add(line);
-            }
+            LoadModuleListFromXml(text);
         }
 
-        /// <summary>解析 &lt;Modules&gt;&lt;Module Name="X"/&gt;&lt;/Modules&gt; → 逐模块加入 _pending（五层重组 v3）。
-        /// 每个 Module Name = Game 根相对目录（如 "scripts" / "modules/battle" / "ui/inventory"）：
-        ///   必须有 config.xml，按 ActiveScope 作用域段的 &lt;Script File&gt; 显式定序加载（≈BHQSL；
-        ///   无文件夹扫描兜底——缺 config.xml = 跳过+告警，用户 2026-06-18 定）。
+        /// <summary>解析 &lt;Modules&gt;&lt;Module Name="X"/&gt;&lt;/Modules&gt; 并逐模块加入 _pending。
+        /// 每个 Module Name 是 Game 根相对目录（如 scripts / modules/match / ui/battle_hud）：
+        ///   必须有 config.xml，按 ActiveScope 作用域段的 &lt;Script File&gt; 显式定序加载；
+        ///   无文件夹扫描兜底，缺 config.xml 时跳过并告警。
         /// 注释掉某 &lt;Module&gt; 行即不加载该模块（选择性裁剪）。</summary>
         private static void LoadModuleListFromXml(string xmlText)
         {

@@ -15,7 +15,7 @@ namespace HeroDefense.Battle
     /// </summary>
     public static class Battlefield3DLayoutBridge
     {
-        public const string DefaultLayoutPath = "ui/scene3d/gamescene.xml";
+        public const string DefaultLayoutPath = "ui/scene3d/battlefield.xml";
         private const string RuntimeRootName = "__Battlefield3D_RuntimeGrid";
         private const string RuntimeVisualRootName = "__Battlefield3D_RuntimeVisuals";
         private const float TileSpriteTopCenterFromTop = 0.42f;
@@ -28,6 +28,7 @@ namespace HeroDefense.Battle
             public CellView[,] cells;
             public string[,] zones;
             public bool hasZones;
+            public bool rectilinear;
             public int found;
             public string path;
         }
@@ -44,6 +45,7 @@ namespace HeroDefense.Battle
             public string zone;
             public bool hasZone;
             public string material;
+            public string shape;
             public float elevation;
             public bool walkable;
         }
@@ -61,6 +63,7 @@ namespace HeroDefense.Battle
         {
             public SpriteRenderer renderer;
             public MaterialSpec material;
+            public string shape;
             public float elevation;
         }
 
@@ -136,7 +139,7 @@ namespace HeroDefense.Battle
                 tinted.top = top;
             }
 
-            tile.renderer.sprite = GetTileSprite(tinted, tile.elevation);
+            tile.renderer.sprite = GetTileSprite(tinted, tile.elevation, tile.shape);
             tile.renderer.color = Color.white;
         }
 
@@ -204,7 +207,6 @@ namespace HeroDefense.Battle
                 var cv = go.GetComponent<CellView>();
                 cv.Row = s.row;
                 cv.Col = s.col;
-                cv.IsCamp = GridMap.IsCellInCamp(s.row, s.col);
                 cv.SetVisualCellSize(s.width, s.height);
                 cv.RefreshBase();
 
@@ -217,7 +219,15 @@ namespace HeroDefense.Battle
 
             Battlefield2DLayoutBridge.ClearRuntimeObjects();
 
-            result = new BuildResult { cells = cells, zones = zones, hasZones = hasZones, found = found, path = path };
+            result = new BuildResult
+            {
+                cells = cells,
+                zones = zones,
+                hasZones = hasZones,
+                rectilinear = IsRectilinearLayout(doc.Root, specs),
+                found = found,
+                path = path
+            };
             HasActiveLayout = found > 0;
             Debug.Log($"[Battlefield3D] 已从 {path} 构建运行时网格: {found}/{GridMap.Rows * GridMap.Cols} zones={hasZones}");
             return found > 0;
@@ -337,6 +347,7 @@ namespace HeroDefense.Battle
                     zone = NormalizeCellZone(AttrString(el, "zone", "public")),
                     hasZone = hasZone,
                     material = AttrString(el, "material", "grass"),
+                    shape = NormalizeTileShape(AttrString(el, "shape", "hex")),
                     elevation = AttrFloat(el, "elevation", AttrFloat(el, "heightOffset", 0f)),
                     walkable = AttrBool(el, "walkable", true)
                 });
@@ -356,6 +367,7 @@ namespace HeroDefense.Battle
             float originY = AttrFloat(tg, "originY", (rows - 1) * cellH * 0.5f);
             bool staggerRows = AttrBool(tg, "staggerRows", false);
             float staggerX = AttrFloat(tg, "staggerX", staggerRows ? cellW * 0.5f : 0f);
+            string shape = NormalizeTileShape(AttrString(tg, "shape", "hex"));
             string material = AttrString(tg, "defaultMaterial", "grass");
             string zone = NormalizeCellZone(AttrString(tg, "defaultZone", "public"));
             var bands = BuildBandSpecs(tg, rows, cols);
@@ -385,6 +397,7 @@ namespace HeroDefense.Battle
                         zone = cellZone,
                         hasZone = true,
                         material = cellMaterial,
+                        shape = shape,
                         elevation = elevation,
                         walkable = walkable
                     });
@@ -516,7 +529,7 @@ namespace HeroDefense.Battle
                 mat = materials["grass"];
 
             bool usesMaterialSprite = mat.sprite != null;
-            var sprite = usesMaterialSprite ? mat.sprite : GetTileSprite(mat, s.elevation);
+            var sprite = usesMaterialSprite ? mat.sprite : GetTileSprite(mat, s.elevation, s.shape);
             var go = new GameObject($"Scene3D_Tile_{s.row}_{s.col}");
             go.transform.SetParent(parent, false);
             go.transform.position = new Vector3(s.x, s.y, s.z);
@@ -539,6 +552,7 @@ namespace HeroDefense.Battle
             {
                 renderer = sr,
                 material = mat,
+                shape = s.shape,
                 elevation = s.elevation
             };
             return true;
@@ -590,9 +604,10 @@ namespace HeroDefense.Battle
             return true;
         }
 
-        static Sprite GetTileSprite(MaterialSpec mat, float elevation)
+        static Sprite GetTileSprite(MaterialSpec mat, float elevation, string shape)
         {
-            string key = $"hex_{ColorUtility.ToHtmlStringRGBA(mat.top)}_{ColorUtility.ToHtmlStringRGBA(mat.side)}_{ColorUtility.ToHtmlStringRGBA(mat.edge)}";
+            string normalizedShape = NormalizeTileShape(shape);
+            string key = $"{normalizedShape}_{ColorUtility.ToHtmlStringRGBA(mat.top)}_{ColorUtility.ToHtmlStringRGBA(mat.side)}_{ColorUtility.ToHtmlStringRGBA(mat.edge)}";
             Sprite cached;
             if (TileSpriteCache.TryGetValue(key, out cached) && cached != null) return cached;
 
@@ -606,6 +621,24 @@ namespace HeroDefense.Battle
             for (int i = 0; i < pixels.Length; i++)
                 pixels[i] = mat.top;
             tex.SetPixels32(pixels);
+
+            if (normalizedShape == "rect")
+            {
+                var rect = new[]
+                {
+                    new Vector2Int(0, 0),
+                    new Vector2Int(w - 1, 0),
+                    new Vector2Int(w - 1, h - 1),
+                    new Vector2Int(0, h - 1)
+                };
+                DrawPolygon(tex, rect, mat.edge);
+                tex.Apply(false, true);
+
+                var rectSprite = Sprite.Create(tex, new Rect(0, 0, w, h), new Vector2(0.5f, 0.5f), 100f);
+                rectSprite.name = tex.name;
+                TileSpriteCache[key] = rectSprite;
+                return rectSprite;
+            }
 
             var hex = new[]
             {
@@ -637,6 +670,28 @@ namespace HeroDefense.Battle
             sprite.name = tex.name;
             TileSpriteCache[key] = sprite;
             return sprite;
+        }
+
+        static string NormalizeTileShape(string value)
+        {
+            return string.Equals(value, "rect", StringComparison.OrdinalIgnoreCase)
+                ? "rect"
+                : "hex";
+        }
+
+        static bool IsRectilinearLayout(XElement root, List<TileSpec> specs)
+        {
+            XElement tileGrid = FindTileGridElement(root);
+            if (tileGrid == null || AttrBool(tileGrid, "staggerRows", false))
+                return false;
+            if (NormalizeTileShape(AttrString(tileGrid, "shape", "hex")) != "rect")
+                return false;
+            for (int i = 0; i < specs.Count; i++)
+            {
+                if (NormalizeTileShape(specs[i].shape) != "rect")
+                    return false;
+            }
+            return specs.Count > 0;
         }
 
         static void ApplyCameraSettings(XElement root)

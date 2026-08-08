@@ -34,7 +34,7 @@ namespace HeroDefense.Core
         private PlayerSaveData _saveData;
         private GameSettings _settings;
 
-        // 存储后端抽象（五层重组 v3 阶段 B2·2026-06-18）：默认本地 PlayerPrefs；
+        // 存储后端抽象：默认本地 PlayerPrefs；
         // 接抖音/微信云存档或自建服务器只需 SetBackend(新实现)，业务（Lua Save_*/Profile）零感知。
         private ISaveBackend _backend = new LocalPrefsBackend();
 
@@ -218,7 +218,7 @@ namespace HeroDefense.Core
         public bool vibrationEnabled = true;
     }
 
-    /// <summary>存储后端抽象（五层重组 v3 阶段 B2·2026-06-18）。
+    /// <summary>存储后端抽象。
     /// SaveManager 只认这个接口存取存档 blob（SAVE_KEY/SETTINGS_KEY 两个键）；
     /// 本地=PlayerPrefs；后续抖音/微信云存档、自建服务器各实现一个，SetBackend 即切换，业务零感知。</summary>
     public interface ISaveBackend

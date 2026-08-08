@@ -135,7 +135,6 @@ namespace HeroDefense.Battle
                 var cv = go.GetComponent<CellView>();
                 cv.Row = s.row;
                 cv.Col = s.col;
-                cv.IsCamp = GridMap.IsCellInCamp(s.row, s.col);
                 cv.SetVisualCellSize(s.width, s.height);
                 cv.RefreshBase();
 

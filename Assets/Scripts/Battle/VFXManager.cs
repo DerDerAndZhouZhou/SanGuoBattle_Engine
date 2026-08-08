@@ -13,7 +13,7 @@ namespace HeroDefense.Battle
     ///   - 仅 Play(vfxKey, x, y, duration) / PlayOnUnit(handle, vfxKey)
     ///   - 业务 Lua 决定"何时播什么 vfx"
     ///
-    /// v3 实现路线（com.unity.modules.particlesystem 已被裁剪）：
+    /// 实现路线（不依赖 ParticleSystem）：
     ///   - **sprite 序列帧 + 自定义池**（不用 ParticleSystem）
     ///   - 每个 vfx_key 一个 prefab（在 Resources/vfx/<key>.prefab 或 Game/resources/art/vfx/<key>.png 序列）
     ///   - prefab 上挂 sprite 序列帧动画组件（Agent C 的 SpriteAnimator 会承载，或本类内置简易播放器）
@@ -23,7 +23,7 @@ namespace HeroDefense.Battle
     ///   - 总活动 VFX ≤ vfx_max_total_particles（默认 1000）
     ///   - 单 vfx_key 池上限 = 20（避免单一资源霸占）
     ///
-    /// 配置来源 vfx.txt：
+    /// 配置来源 vfx.tab：
     ///   key, name, prefab_key, duration, loop, sort_layer
     /// </summary>
     public class VFXManager : MonoBehaviour
@@ -108,7 +108,7 @@ namespace HeroDefense.Battle
         }
 
         // ============ 主入口 1：固定位置播 vfx ============
-        // v2 批 1b（2026-06-14）：返回实例 id（>0 成功；0 = 被拒/失败）。loop 型落点预警圈用 StopById(id) 定点停。
+        // 返回实例 id（>0 成功；0 = 被拒/失败），循环特效可由 StopById 定点停止。
         public int Play(string vfxKey, float worldX, float worldY, float durationOverride)
         {
             if (string.IsNullOrEmpty(vfxKey)) return 0;
@@ -125,7 +125,7 @@ namespace HeroDefense.Battle
             // duration=0 + loop=true 视为常驻（life=∞），需上层手动 Stop
             if (life <= 0f && !loop) life = 1f; // 防 0 寿命卡死
 
-            var frames = LoadVfxFrames(ResolveFramePrefix(vfxKey));   // v2 批 0
+            var frames = LoadVfxFrames(vfxKey);
             var go = AcquireFromPool(vfxKey, prefabKey);
             if (go == null) return 0;
 
@@ -154,8 +154,7 @@ namespace HeroDefense.Battle
         }
 
         // ============ 主入口 2：跟随单位播 vfx ============
-        // v2 批 1b（2026-06-14）：加可选 durationOverride（>0 覆盖 vfx.tab.duration；cast_vfx 用 cast_time 作时长，
-        //   让吟唱特效随读条时长收尾）。0/默认 = 用配置 duration（旧调用零行为变化）。
+        // durationOverride > 0 时覆盖 vfx.tab.duration；0 时使用配置时长。
         public void PlayOnUnit(long handle, string vfxKey, float durationOverride = 0f)
         {
             if (string.IsNullOrEmpty(vfxKey)) return;
@@ -172,7 +171,7 @@ namespace HeroDefense.Battle
             float life = (durationOverride > 0f) ? durationOverride : duration;
             if (life <= 0f && !loop) life = 1f;
 
-            var frames = LoadVfxFrames(ResolveFramePrefix(vfxKey));   // v2 批 0
+            var frames = LoadVfxFrames(vfxKey);
             var go = AcquireFromPool(vfxKey, prefabKey);
             if (go == null) return;
 
@@ -199,7 +198,7 @@ namespace HeroDefense.Battle
             });
         }
 
-        // ============ 查 vfx.txt：返回 (prefab_key, duration, loop, sort_layer) ============
+        // ============ 查 vfx.tab：返回 (prefab_key, duration, loop, sort_layer) ============
         private (string prefabKey, float duration, bool loop, int sortLayer) LookupVFX(string vfxKey)
         {
             try
@@ -208,7 +207,7 @@ namespace HeroDefense.Battle
                 var row = cm.GetTableInfo("vfx", "id", vfxKey);
                 if (row != null)
                 {
-                    string prefab = cm.GetValue<string>(row, "prefab_key", "vfx/default");
+                    string prefab = cm.GetValue<string>(row, "prefab_key", "");
                     float dur = cm.GetValue<float>(row, "duration", 1.0f);
                     bool loop = cm.GetValue<bool>(row, "loop", false);
                     int sort = cm.GetValue<int>(row, "sort_layer", 100);
@@ -219,7 +218,9 @@ namespace HeroDefense.Battle
             {
                 Debug.LogWarning($"[VFXManager] LookupVFX {vfxKey} 失败: {e.Message}");
             }
-            return ("vfx/default", 1.0f, false, 100);
+            // 美术尚未提供或表中未登记时保留一个不可见的短寿命实例，
+            // 不请求虚构的默认资源，也不污染 Console。
+            return (string.Empty, 1.0f, false, 100);
         }
 
         // ============ 从池取 GO（找不到则实例化 prefab 或建占位） ============
@@ -236,8 +237,10 @@ namespace HeroDefense.Battle
                 return queue.Dequeue();
             }
 
-            // 池空 → 加载 prefab 实例化（走 LuaHost.LoadPrefab，可跑 Resources / 后续 AssetBundle）
-            var prefab = LuaHost.LoadPrefab(prefabKey);
+            // 池空 → 有明确 prefab_key 才加载；空键表示当前只允许帧序列或不可见占位。
+            var prefab = string.IsNullOrEmpty(prefabKey)
+                ? null
+                : LuaHost.LoadPrefab(prefabKey);
             GameObject go;
             if (prefab != null)
             {
@@ -336,7 +339,7 @@ namespace HeroDefense.Battle
 
                 vfx.Life += dt;
 
-                // v2 批 0：帧序列推进（有帧才动；空帧=旧 prefab 路线，跳过）
+                // 帧序列推进（有帧才动；空帧表示 prefab 或不可见占位路线）。
                 if (vfx.Frames != null && vfx.Frames.Length > 0 && vfx.SR != null)
                     AdvanceFrame(vfx);
 
@@ -368,23 +371,7 @@ namespace HeroDefense.Battle
             }
         }
 
-        // ============ v2 批 0：帧序列加载（替代空 prefab 路线，让 37 套存量 vfx PNG 可见） ============
-        // 帧前缀 = vfx.tab id（与 resources/art/vfx/<id>_<i>.png 命名一致，37 个里 34 个直接对齐）。
-        // 不用 prefab_key 列：它不可靠——vfx_qinglong_yanyue 行的 prefab_key=vfx/qinglong_yanyue 丢了 vfx_ 前缀，与帧文件名不符。
-        // 3 处历史命名漂移（id ≠ 帧文件名）用别名表显式映射，零改 vfx.tab / 零改 art：
-        private static readonly Dictionary<string, string> _framePrefixAlias = new Dictionary<string, string>
-        {
-            { "hit_white",        "hit_flash_white" },
-            { "hit_crit_red",     "hit_flash_red" },
-            { "wave_boss_banner", "boss_warning_banner" },
-        };
-        private static string ResolveFramePrefix(string vfxKey)
-        {
-            if (!string.IsNullOrEmpty(vfxKey) && _framePrefixAlias.TryGetValue(vfxKey, out var p)) return p;
-            return vfxKey;
-        }
-
-        // 探测 resources/art/vfx/<prefix>_<i>.png 从 0 递增到首个缺失；结果缓存。无帧返回空数组（→ 走旧 prefab 占位路线）。
+        // 探测 resources/art/vfx/<key>_<i>.png，从 0 递增到首个缺失并缓存结果。
         private Sprite[] LoadVfxFrames(string prefix)
         {
             if (string.IsNullOrEmpty(prefix)) return _emptyFrames;
@@ -413,7 +400,7 @@ namespace HeroDefense.Battle
             return sr;
         }
 
-        // ============ v2 批 0：停掉跟随某单位的全部 vfx（loop 状态圈/光环清理；buff_runtime 回滚配对调用） ============
+        // 停掉跟随某单位的全部 VFX（循环状态圈/光环清理）。
         public void StopOnUnit(long handle)
         {
             if (handle == 0) return;

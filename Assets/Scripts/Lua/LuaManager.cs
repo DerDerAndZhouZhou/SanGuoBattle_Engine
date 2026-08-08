@@ -56,6 +56,7 @@ namespace HeroDefense.Lua
             // 业务暂停时传 0 dt，让 wave 倒计时 / 3 选 1 倒计时等所有 Lua 定时器一并冻结
             float dt = HeroDefense.Battle.BattleBridge.BattlePaused ? 0f : Time.deltaTime;
             LuaHost.CallGlobal("Timer_Update", dt);
+            LuaHost.CallGlobal("Game_OnFrame", Time.unscaledDeltaTime);
         }
 
         private new void OnDestroy()

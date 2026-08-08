@@ -7,10 +7,10 @@ namespace HeroDefense.Battle
     /// <summary>
     /// 投射物每帧位移 + 命中判定（性能热路径）。
     ///
-    /// P1.6 (2026-05-26) 扩展：3 种模式（按 Docs/skill-system-architecture.md §5）
+    /// 三种表现模式：
     ///   - TrackUnit:    追单位 transform（原有行为）；目标死亡 → 自动切到 FlyToPoint
     ///   - FlyToPoint:   飞固定 LandingPos
-    ///   - Line:         沿 LineDir 飞 LineDist；途中每个 ≤ LineWidth/2 距离的敌人触发命中（_lineHitSet 避重）
+    ///   - Line:         沿 LineDir 飞 LineDist；对路径中的敌方单位触发命中（_lineHitSet 避重）
     ///
     /// 设计原则：
     ///   - C# 跑数学（位移 + 距离判定），Lua 跑业务（伤害/克制/特效）
@@ -33,12 +33,12 @@ namespace HeroDefense.Battle
         public float HitThreshold { get; set; } = 0.2f;
         public float MaxLifeSec { get; set; } = 5f;
 
-        // P1.6 新增
         public TrackModeKind TrackMode { get; set; } = TrackModeKind.TrackUnit;
         public Vector2 LandingPos { get; set; }
         public Vector2 LineDir { get; set; }
         public float LineDist { get; set; }
         public float LineWidth { get; set; }
+        public int SourceTeam { get; set; }
         // R5 (2026-06-11) 连弩 D1：第一个目标挡住即停（命中即回收）；
         // 飞满 LineDist 未被阻挡 → 回调 targetHandle=0（直达基地的结算由 Lua stash 决定）
         public bool StopOnFirstHit { get; set; }
@@ -49,7 +49,7 @@ namespace HeroDefense.Battle
         // 目标 Transform 持有（销毁则自销 / TrackUnit 模式才用）
         public Transform Target { get; set; }
 
-        // Step 11 池化：BattleBridge.ProjectilePool 上限 30。命中/超时/目标丢失 → 不 Destroy，
+        // BattleBridge.ProjectilePool 上限 30。命中/超时/目标丢失 → 不 Destroy，
         // 而是调 BattleBridge.RecycleProjectile(handle) 回池（gameObject.SetActive(false)）。
         // OnRecycled 由 BattleBridge 设回 true 表示已交由池管理。
         public bool PooledRecycled { get; set; }
@@ -82,7 +82,7 @@ namespace HeroDefense.Battle
             if (_sr != null) GridSortingService.UpdateIfChanged(_sr, ref _lastSortY, spawnPos.y);
         }
 
-        /// <summary>P1.6: 飞向固定落点（targetHandle=0 表示无单位目标）。</summary>
+        /// <summary>飞向固定落点（targetHandle=0 表示无单位目标）。</summary>
         public void InitFlyToPoint(long handle, Vector2 spawnPos, Vector2 landingPos, float speed, float hitThreshold = 0.2f)
         {
             Handle = handle;
@@ -99,9 +99,17 @@ namespace HeroDefense.Battle
             if (_sr != null) GridSortingService.UpdateIfChanged(_sr, ref _lastSortY, spawnPos.y);
         }
 
-        /// <summary>P1.6: 通道穿越投掷物。沿 dir 方向飞 dist 距离，width 半径内的所有敌人触发命中。
-        /// R5: stopOnFirstHit=true（连弩）→ 第一个敌人命中即回收；飞满未被阻挡回调 targetHandle=0。</summary>
-        public void InitLine(long handle, Vector2 spawnPos, Vector2 dir, float dist, float width, float speed, bool stopOnFirstHit = false)
+        /// <summary>通道穿越投掷物。沿 dir 方向飞 dist 距离，命中与来源不同阵营的单位。
+        /// stopOnFirstHit=true 时，第一个目标命中即回收；飞满未被阻挡回调 targetHandle=0。</summary>
+        public void InitLine(
+            long handle,
+            Vector2 spawnPos,
+            Vector2 dir,
+            float dist,
+            float width,
+            float speed,
+            int sourceTeam,
+            bool stopOnFirstHit = false)
         {
             Handle = handle;
             TargetHandle = 0;
@@ -112,6 +120,7 @@ namespace HeroDefense.Battle
             LineDir = dir.normalized;
             LineDist = dist;
             LineWidth = width;
+            SourceTeam = sourceTeam;
             StopOnFirstHit = stopOnFirstHit;
             _lineAnyHit = false;
             _lineStartPos = spawnPos;
@@ -132,12 +141,13 @@ namespace HeroDefense.Battle
             LineDir = Vector2.zero;
             LineDist = 0f;
             LineWidth = 0f;
+            SourceTeam = 0;
             StopOnFirstHit = false;
             _lineAnyHit = false;
             _aliveTime = 0f;
             _hit = false;
             _lineHitSet.Clear();
-            // v2 批 1b（2026-06-14）C#⑤ #3：回池复位 rotation（FaceDir 会把投射物转向，复用时若不复位 → 残留上次角度）。
+            // 回池复位 rotation，避免复用时残留上次角度。
             transform.rotation = Quaternion.identity;
         }
 
@@ -225,22 +235,22 @@ namespace HeroDefense.Battle
                 return;
             }
 
-            // 扫描通道内未命中过的敌人（半径 = LineWidth/2 of 当前位置）
+            // 扫描通道内未命中过的敌方单位（半径 = LineWidth/2 of 当前位置）
             float halfWidth = LineWidth * 0.5f;
             if (halfWidth <= 0f) return;
-            foreach (var kv in BattleBridge.EnumerateEnemies())
+            foreach (var kv in BattleBridge.EnumerateUnits())
             {
-                long eh = kv.Key;
-                if (_lineHitSet.Contains(eh)) continue;
-                var et = kv.Value;
-                if (et == null) continue;
-                var ePos = (Vector2)et.transform.position;
-                if (Vector2.Distance(ePos, nextPos) <= halfWidth)
+                long targetHandle = kv.Key;
+                if (_lineHitSet.Contains(targetHandle)) continue;
+                var targetView = kv.Value;
+                if (targetView == null || targetView.Team == SourceTeam) continue;
+                var targetPos = (Vector2)targetView.transform.position;
+                if (Vector2.Distance(targetPos, nextPos) <= halfWidth)
                 {
-                    _lineHitSet.Add(eh);
+                    _lineHitSet.Add(targetHandle);
                     _lineAnyHit = true;
-                    CallLuaOnHit(Handle, eh);
-                    // R5 D1: 第一个目标挡住即停（必须立即 return —— 命中结算可能杀怪改 _enemies，
+                    CallLuaOnHit(Handle, targetHandle);
+                    // 第一个目标挡住即停（必须立即 return —— 命中结算可能删除单位，
                     // 继续 foreach 会 InvalidOperationException）
                     if (StopOnFirstHit)
                     {

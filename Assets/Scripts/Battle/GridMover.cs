@@ -6,13 +6,12 @@ using HeroDefense.Engine.Host;
 namespace HeroDefense.Battle
 {
     /// <summary>
-    /// 通用网格走路器（R2 统一位移器第一步，2026-06-11）。
+    /// 通用网格走路器。
     ///
-    /// 设计（structure-redesign 块2.2 + tech-research 阶段2）：
-    ///   - 玩家场上单位拖拽移动 = 沿 cell 路径逐格走（速度 GameConfig.unit_move_speed），非瞬移
+    /// 设计：
+    ///   - 场上单位沿 cell 路径逐格移动（速度由业务传入，GameConfig.unit_move_speed 兜底）
     ///   - C# 负责每帧位移（性能热路径），Lua 负责路径计算 / 占格 / 到达后业务
-    ///   - 到达终点 → 调 Lua 全局 Unit_OnWalkArrived(handle)（镜像 EnemyMover→Battle_OnEnemyReachCamp 模式）
-    ///   - EnemyMover（怪专属：紧急区降速/到达打基地）后续并入本类（R2 收尾），先不动避免怪移动回归
+    ///   - 到达终点 → 调 Lua 全局 Unit_OnWalkArrived(handle)
     ///
     /// 0 SerializeField — waypoints/handle 由 BattleBridge.Battle_UnitWalkPath 注入，速度读 GameConfig。
     /// </summary>
@@ -23,9 +22,9 @@ namespace HeroDefense.Battle
 
         private readonly List<Vector2> _waypoints = new List<Vector2>();
         private int _wpIndex;
-        private float _speed = 2.5f;
+        private float _speed = 1f;
 
-        // 四方向移动（2026-06-11 用户需求）：按当前 waypoint 段主轴判定朝向，变化时回调 Lua
+        // 四方向移动：按当前 waypoint 段主轴判定朝向，变化时回调 Lua
         // Unit_OnWalkSegment(handle, dir) 切 walk/walk_up/walk_down + 左右镜像。0=右 1=左 2=上 3=下。
         private int _curDir = -1;
 
@@ -37,7 +36,7 @@ namespace HeroDefense.Battle
 
         // 速度配置（GameConfig.unit_move_speed，缓存）
         private static bool _cfgLoaded;
-        private static float _cfgSpeed = 2.5f;
+        private static float _cfgSpeed = 1f;
 
         private static float ConfigSpeed()
         {
@@ -49,26 +48,26 @@ namespace HeroDefense.Battle
                 {
                     cm.LoadIfNeeded();
                     var row = cm.GetTableInfo("GameConfig", "key", "unit_move_speed");
-                    if (row != null) _cfgSpeed = cm.GetValue<float>(row, "value", 2.5f);
+                    if (row != null) _cfgSpeed = cm.GetValue<float>(row, "value", 1f);
                 }
                 // 审查 F：speed<=0 = 永不到达(moving 卡死)/负值 MoveTowards 反向飞出屏——WPS 改表写坏是现实场景(§10)
                 if (_cfgSpeed <= 0f)
                 {
-                    Debug.LogWarning($"[GridMover] unit_move_speed={_cfgSpeed} 非法(<=0)，回退 2.5");
-                    _cfgSpeed = 2.5f;
+                    Debug.LogWarning($"[GridMover] unit_move_speed={_cfgSpeed} 非法(<=0)，回退 1.0");
+                    _cfgSpeed = 1f;
                 }
             }
             catch (System.Exception e)
             {
-                Debug.LogWarning($"[GridMover] 读 GameConfig.unit_move_speed 失败，沿用默认 2.5: {e.Message}");
+                Debug.LogWarning($"[GridMover] 读 GameConfig.unit_move_speed 失败，沿用默认 1.0: {e.Message}");
             }
             _cfgLoaded = true;
             return _cfgSpeed;
         }
 
         /// <summary>开始沿 waypoints 走（世界坐标，不含当前位置；从 transform 当前位置出发）。
-        /// v2 批 1b（2026-06-14）方案A：speed>0 时逐单位移速（npc.tab.move_speed，Lua 透传）；
-        /// speed<=0 回退 ConfigSpeed()（GameConfig.unit_move_speed 全局兜底，批4 删）。审查 F 的 <=0 clamp 沿用 ConfigSpeed。</summary>
+        /// speed&gt;0 时使用业务传入的单位移速；speed&lt;=0 时回退
+        /// GameConfig.unit_move_speed，并对非法值执行正数保护。</summary>
         public void BeginPath(long handle, List<Vector2> waypoints, float speed = 0f)
         {
             Handle = handle;

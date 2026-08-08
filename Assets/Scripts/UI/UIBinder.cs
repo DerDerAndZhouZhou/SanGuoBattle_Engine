@@ -127,11 +127,11 @@ namespace HeroDefense.UI
             }
         }
 
-        // ============ 面板层级控制（v3 §5.22 / Step 10：9 个 ui_sort_* 常量配套） ============
+        // ============ 面板层级控制 ============
 
         /// <summary>
         /// 按 Tag 找到面板 → 设其 Canvas.overrideSorting + sortingOrder → SetActive(true)。
-        /// 面板根上若无 Canvas 组件 → LogWarning（不抛异常）。GameConfig 9 项 `ui_sort_*` 配合使用。
+        /// 面板根上若无 Canvas 组件则告警；sortingOrder 由调用方显式传入。
         /// </summary>
         public static void ShowPanel(string tag, int sortingOrder)
         {
